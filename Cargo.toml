@@ -1,0 +1,22 @@
+[package]
+name = "solana-validator-exporter"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.7.7"
+prometheus-client = "0.22.3"
+solana-account-decoder = "2.0.13"
+solana-rpc-client = "2.0.13"
+solana-rpc-client-api = "2.0.13"
+solana-sdk = "2.0.13"
+solana-transaction-status = "2.0.13"
+tokio = "1.40.0"
+clap = { version = "4.5.4", features = ["derive"] }
+log = "0.4.22"
+env_logger = "0.11.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+
+[[bin]]
+name = "solana-validator-exporter"
