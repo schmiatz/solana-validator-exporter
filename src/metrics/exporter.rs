@@ -123,13 +123,13 @@ impl Metrics {
                 .lock()
                 .await
                 .set_vote_account_balance(vote_account_balance);
-            sleep(Duration::from_secs(60)).await;
             metrics.lock().await.set_block_production(
                 leader_slots.len() as u64,
                 produced as u64,
                 (total - produced) as u64,
             );
             metrics.lock().await.set_jito_tips(jito_tips);
+            sleep(Duration::from_secs(180)).await;
         }
     }
 

@@ -15,7 +15,7 @@ use solana_sdk::sysvar::clock::Clock;
 use solana_sdk::sysvar::stake_history;
 use solana_transaction_status::UiTransactionEncoding;
 use std::fmt;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub struct SolanaClient {
     client: RpcClient,
@@ -60,7 +60,7 @@ impl fmt::Display for StakeState {
 
 impl SolanaClient {
     pub fn new(url: &str, identity_account: &str, vote_account: &str) -> SolanaClient {
-        let client = RpcClient::new(url.to_string());
+        let client = RpcClient::new_with_timeout(url.to_string(), Duration::from_secs(120));
         SolanaClient {
             client,
             vote_account: vote_account.to_string(),
