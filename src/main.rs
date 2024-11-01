@@ -4,7 +4,7 @@ use axum::routing::get;
 use axum::Router;
 use clap::Parser;
 use env_logger::Env;
-use log::{info, warn};
+use log::info;
 use metrics::exporter::metrics_handler;
 use serde::Deserialize;
 use std::fs::File;
