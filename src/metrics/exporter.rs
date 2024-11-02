@@ -37,6 +37,7 @@ pub struct Metrics {
     vote_account: String,
     pub slot: Family<MethodLabels, Gauge>,
     pub epoch: Family<MethodLabels, Gauge>,
+    pub epoch_progress: Family<MethodLabels, Gauge>,
     pub stake: Family<StakeLabels, Gauge>,
     pub identity_balance: Family<MethodLabels, Gauge>,
     pub vote_account_balance: Family<MethodLabels, Gauge>,
@@ -56,6 +57,7 @@ impl Metrics {
             vote_account,
             slot: Family::default(),
             epoch: Family::default(),
+            epoch_progress: Family::default(),
             stake: Family::default(),
             identity_balance: Family::default(),
             vote_account_balance: Family::default(),
@@ -79,6 +81,12 @@ impl Metrics {
         state
             .registry
             .register("solana_epoch", "Current epoch", self.epoch.clone());
+
+        state.registry.register(
+            "solana_epoch_progress",
+            "Epoch progress",
+            self.epoch_progress.clone(),
+        );
 
         state
             .registry
@@ -150,7 +158,7 @@ impl Metrics {
                 metrics.lock().await.set_slot(slot);
             }
 
-            let epoch = match client.get_epoch().await {
+            let epoch_info = match client.get_epoch().await {
                 Ok(e) => Some(e),
                 Err(e) => {
                     error!("Error fetching epoch: {}", e);
@@ -158,8 +166,10 @@ impl Metrics {
                 }
             };
 
-            if let Some(epoch) = epoch {
+            if let Some(epoch_info) = epoch_info {
+                let (epoch, epoch_progress) = epoch_info;
                 metrics.lock().await.set_epoch(epoch);
+                metrics.lock().await.set_epoch_progress(epoch_progress);
             }
 
             let stake = match client.get_stake_details().await {
@@ -247,7 +257,7 @@ impl Metrics {
                 );
             }
 
-            let jito_tips = if let Some(epoch) = epoch {
+            let jito_tips = if let Some((epoch, _)) = epoch_info {
                 match client.get_jito_tips(epoch).await {
                     Ok(e) => Some(e),
                     Err(e) => {
@@ -314,8 +324,14 @@ impl Metrics {
         self.slot.get_or_create(&MethodLabels {}).set(slot as i64);
     }
 
-    pub fn set_epoch(&self, epoch: u64) {
-        self.epoch.get_or_create(&MethodLabels {}).set(epoch as i64);
+    pub fn set_epoch(&self, epoch: i64) {
+        self.epoch.get_or_create(&MethodLabels {}).set(epoch);
+    }
+
+    pub fn set_epoch_progress(&self, progress: i64) {
+        self.epoch_progress
+            .get_or_create(&MethodLabels {})
+            .set(progress);
     }
 
     pub fn set_stake(&self, stake_state: StakeState) {

@@ -93,9 +93,12 @@ impl SolanaClient {
         Ok(slot)
     }
 
-    pub async fn get_epoch(&self) -> Result<u64, Box<dyn std::error::Error>> {
+    pub async fn get_epoch(&self) -> Result<(i64, i64), Box<dyn std::error::Error>> {
         let epoch = self.client.get_epoch_info().await?;
-        Ok(epoch.epoch)
+        Ok((
+            epoch.epoch as i64,
+            ((epoch.slot_index as f64 / epoch.slots_in_epoch as f64) * 10000.0) as i64,
+        ))
     }
 
     pub async fn get_stake_details(&self) -> Result<StakeState, Box<dyn std::error::Error>> {
@@ -286,7 +289,7 @@ impl SolanaClient {
         Ok(sum)
     }
 
-    pub async fn get_jito_tips(&self, epoch: u64) -> Result<u64, Box<dyn std::error::Error>> {
+    pub async fn get_jito_tips(&self, epoch: i64) -> Result<u64, Box<dyn std::error::Error>> {
         let (addr, _) = Pubkey::find_program_address(
             &[
                 b"TIP_DISTRIBUTION_ACCOUNT",

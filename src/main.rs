@@ -56,24 +56,4 @@ async fn main() {
         .unwrap();
 
     axum::serve(listener, router).await.unwrap();
-
-    // let mut block_rewards = 0;
-    // for leader_slot in leader_slots.iter() {
-    //     if *leader_slot >= slot {
-    //         break;
-    //     }
-    //     loop {
-    //         let reward = client.get_block_rewards(*leader_slot).await;
-    //         match reward {
-    //             Ok(_) => {
-    //                 block_rewards += reward.unwrap();
-    //                 break;
-    //             }
-    //             Err(err) => {
-    //                 println!("{}, retrying for slot {}", err, leader_slot);
-    //             }
-    //         }
-    //     }
-    // }
-    // println!("Block Rewards: {}", block_rewards as f32 / 1e9);
 }
