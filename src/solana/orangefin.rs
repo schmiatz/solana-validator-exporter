@@ -16,7 +16,6 @@ use solana_sdk::sysvar;
 use solana_sdk::sysvar::clock::Clock;
 use solana_sdk::sysvar::stake_history;
 use std::collections::HashMap;
-use std::fmt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub struct SolanaClient {
@@ -50,31 +49,6 @@ struct ResultData {
 #[derive(Debug, Deserialize)]
 struct TickerData {
     c: [String; 2], // Array for the closing price and volume
-}
-
-impl fmt::Display for StakeState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Format each stake field by dividing by 1e9
-        write!(
-            f,
-            "StakeState {{\n \
-            Activated Stake: {:.9},\n \
-            Activating Stake: {:.9},\n \
-            Deactivating Stake: {:.9},\n \
-            Locked Stake: {:.9},\n \
-            Activated Stake Accounts: {},\n \
-            Activating Stake Accounts: {},\n \
-            Deactivating Stake Accounts: {}\n\
-            }}",
-            self.activated_stake as f64 / 1e9,
-            self.activating_stake as f64 / 1e9,
-            self.deactivating_stake as f64 / 1e9,
-            self.locked_stake as f64 / 1e9,
-            self.activated_stake_accounts,
-            self.activating_stake_accounts,
-            self.deactivating_stake_accounts,
-        )
-    }
 }
 
 impl SolanaClient {
@@ -378,5 +352,22 @@ impl SolanaClient {
             }
         }
         Ok(((next_slot - current_slot) * average_slot_time_ms) as i64)
+    }
+
+    pub async fn get_last_block_rewards(&self) -> Result<i64, Box<dyn std::error::Error>> {
+        let mut keys: Vec<u64> = self.block_rewards.keys().cloned().collect();
+        keys.sort();
+        let block_rewards: Vec<_> = keys
+            .iter()
+            .map(|&k| (k, self.block_rewards.get(&k).unwrap()))
+            .filter(|(_, reward)| **reward > 0)
+            .collect();
+
+        let last_4 = &block_rewards[block_rewards.len().saturating_sub(4)..];
+        let mut sum = 0;
+        for (_, rewards) in last_4 {
+            sum += **rewards;
+        }
+        Ok(sum / 4)
     }
 }

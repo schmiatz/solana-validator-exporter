@@ -47,6 +47,7 @@ pub struct Metrics {
     pub usd_price: Family<MethodLabels, Gauge>,
     pub epoch_block_rewards: Family<MethodLabels, Gauge>,
     pub ms_to_next_slot: Family<MethodLabels, Gauge>,
+    pub last_block_rewards: Family<MethodLabels, Gauge>,
 }
 
 impl Metrics {
@@ -67,6 +68,7 @@ impl Metrics {
             usd_price: Family::default(),
             epoch_block_rewards: Family::default(),
             ms_to_next_slot: Family::default(),
+            last_block_rewards: Family::default(),
         }
     }
 
@@ -132,6 +134,12 @@ impl Metrics {
             "solana_ms_to_next_slot",
             "Time to next leader slot",
             self.ms_to_next_slot.clone(),
+        );
+
+        state.registry.register(
+            "solana_last_block_rewards",
+            "Average of last non-zero block rewards",
+            self.last_block_rewards.clone(),
         );
 
         state
@@ -316,6 +324,21 @@ impl Metrics {
             if let Some(block_rewards) = block_rewards {
                 metrics.lock().await.set_epoch_block_rewards(block_rewards);
             }
+
+            let last_block_rewards = match client.get_last_block_rewards().await {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    error!("Error fetching last block rewards: {}", e);
+                    None
+                }
+            };
+
+            if let Some(last_block_rewards) = last_block_rewards {
+                metrics
+                    .lock()
+                    .await
+                    .set_last_block_rewards(last_block_rewards);
+            }
             sleep(Duration::from_secs(60)).await;
         }
     }
@@ -435,6 +458,12 @@ impl Metrics {
         self.ms_to_next_slot
             .get_or_create(&MethodLabels {})
             .set(ms_to_next_slot);
+    }
+
+    pub fn set_last_block_rewards(&self, last_block_rewards: i64) {
+        self.last_block_rewards
+            .get_or_create(&MethodLabels {})
+            .set(last_block_rewards);
     }
 }
 
