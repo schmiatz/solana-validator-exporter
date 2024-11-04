@@ -1,5 +1,5 @@
 use crate::solana;
-use crate::solana::orangefin::StakeState;
+use crate::solana::validator::StakeState;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::header::CONTENT_TYPE;
@@ -148,7 +148,7 @@ impl Metrics {
     pub async fn run_loop(&self) {
         let metrics = Arc::new(Mutex::new(self));
 
-        let mut client = solana::orangefin::SolanaClient::new(
+        let mut client = solana::validator::SolanaClient::new(
             &self.rpc_url,
             &self.identity_account,
             &self.vote_account,

@@ -203,9 +203,11 @@ impl SolanaClient {
             .iter()
             .filter(|(identity, _)| **identity == self.identity_account)
             .next();
-        let (_, block_production) =
-            my_blocks.ok_or_else(|| "Error parsing leader block production")?;
-        Ok(*block_production)
+        let mut bp: (usize, usize) = (0, 0);
+        if let Some((_, block_production)) = my_blocks {
+            bp = *block_production;
+        }
+        Ok(bp)
     }
 
     pub async fn get_block_rewards(&self, slot: u64) -> Result<i64, Box<dyn std::error::Error>> {
@@ -327,6 +329,9 @@ impl SolanaClient {
         current_slot: u64,
         leader_slots: Vec<u64>,
     ) -> Result<i64, Box<dyn std::error::Error>> {
+        if leader_slots.is_empty() {
+            return Ok::<i64, Box<dyn std::error::Error>>(-1);
+        }
         let samples = self.client.get_recent_performance_samples(Some(60)).await?;
 
         let (slots, secs) = samples.iter().fold(
