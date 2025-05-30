@@ -269,7 +269,7 @@ impl SolanaClient {
         let (addr, _) = Pubkey::find_program_address(
             &[
                 b"TIP_DISTRIBUTION_ACCOUNT",
-                Pubkey::from_str("oRAnGeU5h8h2UkvbfnE5cjXnnAa4rBoaxmS4kbFymSe")?
+                Pubkey::from_str(&self.vote_account.clone())?
                     .to_bytes()
                     .as_ref(),
                 epoch.to_le_bytes().as_ref(),
