@@ -19,16 +19,19 @@ use tokio::time::sleep;
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct MethodLabels {
     // pub epoch: u64,
+    pub vote_account: String,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct StakeLabels {
     pub stake_type: String,
+    pub vote_account: String,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct BlockLabels {
     pub block_type: String,
+    pub vote_account: String,
 }
 
 pub struct Metrics {
@@ -344,16 +347,26 @@ impl Metrics {
     }
 
     pub fn set_slot(&self, slot: u64) {
-        self.slot.get_or_create(&MethodLabels {}).set(slot as i64);
+        self.slot
+            .get_or_create(&MethodLabels {
+                vote_account: self.vote_account.clone(),
+            })
+            .set(slot as i64);
     }
 
     pub fn set_epoch(&self, epoch: i64) {
-        self.epoch.get_or_create(&MethodLabels {}).set(epoch);
+        self.epoch
+            .get_or_create(&MethodLabels {
+                vote_account: self.vote_account.clone(),
+            })
+            .set(epoch);
     }
 
     pub fn set_epoch_progress(&self, progress: i64) {
         self.epoch_progress
-            .get_or_create(&MethodLabels {})
+            .get_or_create(&MethodLabels {
+                vote_account: self.vote_account.clone(),
+            })
             .set(progress);
     }
 
@@ -361,55 +374,66 @@ impl Metrics {
         self.stake
             .get_or_create(&StakeLabels {
                 stake_type: "activated_stake".to_string(),
+                vote_account: self.vote_account.clone(),
             })
             .set(stake_state.activated_stake as i64);
 
         self.stake
             .get_or_create(&StakeLabels {
                 stake_type: "activating_stake".to_string(),
+                vote_account: self.vote_account.clone(),
             })
             .set(stake_state.activating_stake as i64);
 
         self.stake
             .get_or_create(&StakeLabels {
                 stake_type: "deactivating_stake".to_string(),
+                vote_account: self.vote_account.clone(),
             })
             .set(stake_state.deactivating_stake as i64);
 
         self.stake
             .get_or_create(&StakeLabels {
                 stake_type: "locked_stake".to_string(),
+                vote_account: self.vote_account.clone(),
             })
             .set(stake_state.locked_stake as i64);
 
         self.stake
             .get_or_create(&StakeLabels {
                 stake_type: "activated_stake_accounts".to_string(),
+                vote_account: self.vote_account.clone(),
             })
             .set(stake_state.activated_stake_accounts as i64);
 
         self.stake
             .get_or_create(&StakeLabels {
                 stake_type: "activating_stake_accounts".to_string(),
+                vote_account: self.vote_account.clone(),
             })
             .set(stake_state.activating_stake_accounts as i64);
 
         self.stake
             .get_or_create(&StakeLabels {
                 stake_type: "deactivating_stake_accounts".to_string(),
+                vote_account: self.vote_account.clone(),
             })
             .set(stake_state.deactivating_stake_accounts as i64);
     }
 
     pub fn set_identity_balance(&self, balance: u64) {
         self.identity_balance
-            .get_or_create(&MethodLabels {})
+            .get_or_create(&MethodLabels {
+                vote_account: self.vote_account.clone(),
+            })
             .set(balance as i64);
     }
 
     pub fn set_vote_account_balance(&self, balance: u64) {
         self.vote_account_balance
-            .get_or_create(&MethodLabels {})
+            .get_or_create(&MethodLabels {
+                vote_account: self.vote_account.clone(),
+            })
             .set(balance as i64);
     }
 
@@ -417,52 +441,69 @@ impl Metrics {
         self.blocks
             .get_or_create(&BlockLabels {
                 block_type: "total".to_string(),
+                vote_account: self.vote_account.clone(),
             })
             .set(total as i64);
 
         self.blocks
             .get_or_create(&BlockLabels {
                 block_type: "produced".to_string(),
+                vote_account: self.vote_account.clone(),
             })
             .set(produced as i64);
         self.blocks
             .get_or_create(&BlockLabels {
                 block_type: "skipped".to_string(),
+                vote_account: self.vote_account.clone(),
             })
             .set(skipped as i64);
     }
 
     pub fn set_jito_tips(&self, tips: u64) {
         self.jito_tips
-            .get_or_create(&MethodLabels {})
+            .get_or_create(&MethodLabels {
+                vote_account: self.vote_account.clone(),
+            })
             .set(tips as i64);
     }
 
     pub fn set_vote_credit_rank(&self, rank: u32) {
         self.vote_credit_rank
-            .get_or_create(&MethodLabels {})
+            .get_or_create(&MethodLabels {
+                vote_account: self.vote_account.clone(),
+            })
             .set(rank as i64);
     }
 
     pub fn set_usd_price(&self, price: i64) {
-        self.usd_price.get_or_create(&MethodLabels {}).set(price);
+        self.usd_price
+            .get_or_create(&MethodLabels {
+                vote_account: self.vote_account.clone(),
+            })
+            .set(price);
     }
 
     pub fn set_epoch_block_rewards(&self, block_rewards: i64) {
         self.epoch_block_rewards
-            .get_or_create(&MethodLabels {})
+            .get_or_create(&MethodLabels {
+                vote_account: self.vote_account.clone(),
+            })
             .set(block_rewards);
     }
 
     pub fn set_ms_to_next_slot(&self, ms_to_next_slot: i64) {
         self.ms_to_next_slot
-            .get_or_create(&MethodLabels {})
+            .get_or_create(&MethodLabels {
+                vote_account: self.vote_account.clone(),
+            })
             .set(ms_to_next_slot);
     }
 
     pub fn set_last_block_rewards(&self, last_block_rewards: i64) {
         self.last_block_rewards
-            .get_or_create(&MethodLabels {})
+            .get_or_create(&MethodLabels {
+                vote_account: self.vote_account.clone(),
+            })
             .set(last_block_rewards);
     }
 }
