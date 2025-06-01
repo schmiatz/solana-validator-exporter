@@ -17,17 +17,48 @@ This is a Prometheus exporter for Solana validators.
     *   `vote_account`: Your validator's vote account public key.
     *   `identity_account`: Your validator's identity account public key.
 
-2.  **Build the exporter.**
-    ```bash
-    cargo build --release
-    ```
+## Running the Exporter
 
-## Usage
+You have two options to run the exporter: direct build or Docker container.
 
-Run the exporter with the following command:
+### Option 1: Direct Build
 
+1. **Install Rust** (if not already installed):
+   ```bash
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   ```
+
+2. **Build the exporter**:
+   ```bash
+   cargo build --release
+   ```
+
+3. **Run the exporter**:
+   ```bash
+   ./target/release/solana-validator-exporter --config-file config.yaml
+   ```
+
+### Option 2: Docker Container
+
+1. **Build the Docker image**:
+   ```bash
+   docker build -t solana-validator-exporter -f docker/Dockerfile .
+   ```
+
+2. **Run the container**:
+   ```bash
+   docker run -d \
+     --name solana-validator-exporter \
+     -p 9090:9090 \
+     -v $(pwd)/config.yaml:/home/exporter/config.yaml \
+     solana-validator-exporter --config-file /home/exporter/config.yaml
+   ```
+
+## Verifying the Exporter
+
+After running either method, you can verify the exporter is working by accessing the metrics endpoint:
 ```bash
-./target/release/solana-validator-exporter --config-file config.yaml
+curl http://localhost:9090/metrics
 ```
 
-The exporter will then expose metrics on the port specified in your configuration file (e.g., `http://localhost:9090/metrics`).
+The exporter will expose metrics on the port specified in your configuration file (e.g., `http://localhost:9090/metrics`).
