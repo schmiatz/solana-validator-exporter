@@ -154,8 +154,8 @@ impl Metrics {
                 &self.vote_account,
             );
 
-            // Create a channel for communicating current slot and leader slots to background task
-            let (slot_tx, mut slot_rx) = tokio::sync::mpsc::unbounded_channel::<(u64, Vec<u64>)>();
+            // Create a channel for communicating current slot, epoch, and leader slots to background task
+            let (slot_tx, mut slot_rx) = tokio::sync::mpsc::unbounded_channel::<(u64, u64, Vec<u64>)>();
             
             // Spawn background task for block rewards fetching
             let mut bg_client = solana::validator::SolanaClient::new(
@@ -165,9 +165,9 @@ impl Metrics {
             );
             let bg_self = self.clone();
             tokio::spawn(async move {
-                while let Some((current_slot, leader_slots)) = slot_rx.recv().await {
+                while let Some((current_slot, current_epoch, leader_slots)) = slot_rx.recv().await {
                     if !leader_slots.is_empty() {
-                        match bg_client.get_block_rewards_sum(current_slot, leader_slots).await {
+                        match bg_client.get_block_rewards_sum(current_slot, current_epoch, leader_slots).await {
                             Ok(block_rewards) => {
                                 bg_self.set_epoch_block_rewards(block_rewards);
                                 
@@ -338,8 +338,9 @@ impl Metrics {
                 }
 
                 // Send current slot and leader slots to background task for block rewards processing
-                if let (Some(slot), Some(leader_slots)) = (slot, leader_slots.as_ref()) {
-                    if let Err(_) = slot_tx.send((slot, leader_slots.clone())) {
+                if let (Some(slot), Some(leader_slots), Some(epoch_info)) = (slot, leader_slots.as_ref(), epoch_info.as_ref()) {
+                    let (epoch, _) = *epoch_info;
+                    if let Err(_) = slot_tx.send((slot, epoch as u64, leader_slots.clone())) {
                         error!("Failed to send slot info to background block rewards task");
                     }
                 }

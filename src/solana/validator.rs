@@ -25,6 +25,7 @@ pub struct SolanaClient {
     vote_account: String,
     identity_account: String,
     block_rewards: HashMap<u64, i64>,
+    current_epoch: Option<u64>,
 }
 
 pub struct StakeState {
@@ -61,6 +62,7 @@ impl SolanaClient {
             vote_account: vote_account.to_string(),
             identity_account: identity_account.to_string(),
             block_rewards: HashMap::new(),
+            current_epoch: None,
         }
     }
 
@@ -248,15 +250,17 @@ impl SolanaClient {
     pub async fn get_block_rewards_sum(
         &mut self,
         current_slot: u64,
+        current_epoch: u64,
         leader_slots: Vec<u64>,
     ) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
         // New epoch detection and reset
-        if let Some(first_slot) = self.block_rewards.keys().min() {
-            if !leader_slots.is_empty() && leader_slots[0] != *first_slot {
-                info!("New epoch detected");
+        if let Some(cached_epoch) = self.current_epoch {
+            if current_epoch != cached_epoch {
+                info!("New epoch detected: {} -> {}", cached_epoch, current_epoch);
                 self.block_rewards.clear();
             }
         }
+        self.current_epoch = Some(current_epoch);
 
         // Filter slots that need fetching: not already cached, not in future, and within reasonable range
         let slots_to_fetch: Vec<u64> = leader_slots
