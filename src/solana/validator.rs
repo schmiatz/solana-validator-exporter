@@ -224,7 +224,14 @@ impl SolanaClient {
             )
             .await
         {
-            Ok(block) => Ok(block.rewards.ok_or_else(|| "Error fetching rewards")?[0].lamports),
+            Ok(block) => {
+                let rewards = block.rewards.ok_or_else(|| "Error fetching rewards")?;
+                if rewards.is_empty() {
+                    Ok(0)
+                } else {
+                    Ok(rewards[0].lamports)
+                }
+            },
             Err(e) => {
                 let error = e.to_string();
                 if error.contains("skipped") {
