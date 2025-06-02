@@ -12,9 +12,7 @@ use prometheus_client::metrics::family::Family;
 use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::registry::Registry;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::Mutex;
-use tokio::time::sleep;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct MethodLabels {
@@ -148,105 +146,162 @@ impl Metrics {
         state
     }
 
-    pub async fn run_loop(&self) {
-        let metrics = Arc::new(Mutex::new(self));
+    pub fn run_loop(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let client = solana::validator::SolanaClient::new(
+                &self.rpc_url,
+                &self.identity_account,
+                &self.vote_account,
+            );
 
-        let mut client = solana::validator::SolanaClient::new(
-            &self.rpc_url,
-            &self.identity_account,
-            &self.vote_account,
-        );
-        loop {
-            let slot = match client.get_slot().await {
-                Ok(s) => Some(s),
-                Err(e) => {
-                    error!("Error fetching slot: {}", e);
-                    None
+            // Create a channel for communicating current slot and leader slots to background task
+            let (slot_tx, mut slot_rx) = tokio::sync::mpsc::unbounded_channel::<(u64, Vec<u64>)>();
+            
+            // Spawn background task for block rewards fetching
+            let mut bg_client = solana::validator::SolanaClient::new(
+                &self.rpc_url,
+                &self.identity_account,
+                &self.vote_account,
+            );
+            let bg_self = self.clone();
+            tokio::spawn(async move {
+                while let Some((current_slot, leader_slots)) = slot_rx.recv().await {
+                    if !leader_slots.is_empty() {
+                        match bg_client.get_block_rewards_sum(current_slot, leader_slots).await {
+                            Ok(block_rewards) => {
+                                bg_self.set_epoch_block_rewards(block_rewards);
+                                
+                                match bg_client.get_last_block_rewards().await {
+                                    Ok(last_rewards) => {
+                                        bg_self.set_last_block_rewards(last_rewards);
+                                    }
+                                    Err(e) => {
+                                        error!("Error fetching last block rewards: {}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("Error fetching block rewards: {}", e);
+                            }
+                        }
+                    }
                 }
-            };
+            });
 
-            if let Some(slot) = slot {
-                metrics.lock().await.set_slot(slot);
-            }
+            loop {
+                let slot = match client.get_slot().await {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        error!("Error fetching slot: {}", e);
+                        None
+                    }
+                };
 
-            let epoch_info = match client.get_epoch().await {
-                Ok(e) => Some(e),
-                Err(e) => {
-                    error!("Error fetching epoch: {}", e);
-                    None
+                if let Some(slot) = slot {
+                    self.set_slot(slot);
                 }
-            };
 
-            if let Some(epoch_info) = epoch_info {
-                let (epoch, epoch_progress) = epoch_info;
-                metrics.lock().await.set_epoch(epoch);
-                metrics.lock().await.set_epoch_progress(epoch_progress);
-            }
+                let epoch_info = match client.get_epoch().await {
+                    Ok(e) => Some(e),
+                    Err(e) => {
+                        error!("Error fetching epoch: {}", e);
+                        None
+                    }
+                };
 
-            let stake = match client.get_stake_details().await {
-                Ok(e) => Some(e),
-                Err(e) => {
-                    error!("Error fetching stake_details: {}", e);
-                    None
+                if let Some(epoch_info) = epoch_info {
+                    let (epoch, epoch_progress) = epoch_info;
+                    self.set_epoch(epoch);
+                    self.set_epoch_progress(epoch_progress);
                 }
-            };
 
-            if let Some(stake) = stake {
-                metrics.lock().await.set_stake(stake);
-            }
+                let stake = match client.get_stake_details().await {
+                    Ok(e) => Some(e),
+                    Err(e) => {
+                        error!("Error fetching stake_details: {}", e);
+                        None
+                    }
+                };
 
-            let identity_balance = match client.get_identity_balance().await {
-                Ok(e) => Some(e),
-                Err(e) => {
-                    error!("Error fetching identity balance: {}", e);
-                    None
+                if let Some(stake) = stake {
+                    self.set_stake(stake);
                 }
-            };
 
-            if let Some(identity_balance) = identity_balance {
-                metrics.lock().await.set_identity_balance(identity_balance);
-            }
+                let identity_balance = match client.get_identity_balance().await {
+                    Ok(e) => Some(e),
+                    Err(e) => {
+                        error!("Error fetching identity balance: {}", e);
+                        None
+                    }
+                };
 
-            let vote_account_balance = match client.get_vote_balance().await {
-                Ok(e) => Some(e),
-                Err(e) => {
-                    error!("Error fetching vote account: {}", e);
-                    None
+                if let Some(identity_balance) = identity_balance {
+                    self.set_identity_balance(identity_balance);
                 }
-            };
 
-            if let Some(vote_account_balance) = vote_account_balance {
-                metrics
-                    .lock()
-                    .await
-                    .set_vote_account_balance(vote_account_balance);
-            }
+                let vote_account_balance = match client.get_vote_balance().await {
+                    Ok(e) => Some(e),
+                    Err(e) => {
+                        error!("Error fetching vote account: {}", e);
+                        None
+                    }
+                };
 
-            let leader_slots = match client.get_leader_info().await {
-                Ok(mut e) => {
-                    e.sort();
-                    Some(e)
+                if let Some(vote_account_balance) = vote_account_balance {
+                    self.set_vote_account_balance(vote_account_balance);
                 }
-                Err(e) => {
-                    error!("Error fetching leader slots: {}", e);
-                    Some(vec![])
-                }
-            };
 
-            let block_production = match client.get_block_production().await {
-                Ok(e) => Some(e),
-                Err(e) => {
-                    error!("Error fetching block production: {}", e);
-                    None
-                }
-            };
+                let leader_slots = match client.get_leader_info().await {
+                    Ok(mut e) => {
+                        e.sort();
+                        Some(e)
+                    }
+                    Err(e) => {
+                        error!("Error fetching leader slots: {}", e);
+                        Some(vec![])
+                    }
+                };
 
-            let ms_to_next_slot =
-                if let (Some(slot), Some(leader_slots)) = (slot, leader_slots.clone()) {
-                    match client.get_ms_to_next_slot(slot, leader_slots).await {
+                let block_production = match client.get_block_production().await {
+                    Ok(e) => Some(e),
+                    Err(e) => {
+                        error!("Error fetching block production: {}", e);
+                        None
+                    }
+                };
+
+                let ms_to_next_slot =
+                    if let (Some(slot), Some(leader_slots)) = (slot, leader_slots.clone()) {
+                        match client.get_ms_to_next_slot(slot, leader_slots).await {
+                            Ok(e) => Some(e),
+                            Err(e) => {
+                                error!("Error fetching time to next slot: {}", e);
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+
+                if let Some(ms_to_next_slot) = ms_to_next_slot {
+                    self.set_ms_to_next_slot(ms_to_next_slot);
+                }
+
+                if let (Some(leader_slots), Some((total, produced))) =
+                    (leader_slots.as_ref(), block_production)
+                {
+                    self.set_block_production(
+                        leader_slots.len() as u64,
+                        produced as u64,
+                        (total - produced) as u64,
+                    );
+                }
+
+                let jito_tips = if let Some((epoch, _)) = epoch_info {
+                    match client.get_jito_tips(epoch).await {
                         Ok(e) => Some(e),
                         Err(e) => {
-                            error!("Error fetching time to next slot: {}", e);
+                            error!("Error fetching jito tips: {}", e);
                             None
                         }
                     }
@@ -254,96 +309,45 @@ impl Metrics {
                     None
                 };
 
-            if let Some(ms_to_next_slot) = ms_to_next_slot {
-                metrics.lock().await.set_ms_to_next_slot(ms_to_next_slot);
-            }
+                if let Some(jito_tips) = jito_tips {
+                    self.set_jito_tips(jito_tips);
+                }
 
-            if let (Some(leader_slots), Some((total, produced))) =
-                (leader_slots.as_ref(), block_production)
-            {
-                metrics.lock().await.set_block_production(
-                    leader_slots.len() as u64,
-                    produced as u64,
-                    (total - produced) as u64,
-                );
-            }
-
-            let jito_tips = if let Some((epoch, _)) = epoch_info {
-                match client.get_jito_tips(epoch).await {
+                let vote_credit_rank = match client.get_vote_credit_rank().await {
                     Ok(e) => Some(e),
                     Err(e) => {
-                        error!("Error fetching jito tips: {}", e);
+                        error!("Error fetching vote credit rank: {}", e);
                         None
                     }
+                };
+
+                if let Some(vote_credit_rank) = vote_credit_rank {
+                    self.set_vote_credit_rank(vote_credit_rank);
                 }
-            } else {
-                None
-            };
 
-            if let Some(jito_tips) = jito_tips {
-                metrics.lock().await.set_jito_tips(jito_tips);
-            }
-
-            let vote_credit_rank = match client.get_vote_credit_rank().await {
-                Ok(e) => Some(e),
-                Err(e) => {
-                    error!("Error fetching vote credit rank: {}", e);
-                    None
-                }
-            };
-
-            if let Some(vote_credit_rank) = vote_credit_rank {
-                metrics.lock().await.set_vote_credit_rank(vote_credit_rank);
-            }
-
-            let usd_price = match client.get_sol_usd_price().await {
-                Ok(e) => Some(e),
-                Err(e) => {
-                    error!("Error fetching SOL/USD: {}", e);
-                    None
-                }
-            };
-
-            if let Some(usd_price) = usd_price {
-                metrics.lock().await.set_usd_price(usd_price);
-            }
-
-            let block_rewards = if let Some((slot, leader_slots)) = slot.zip(leader_slots.as_ref())
-            {
-                match client
-                    .get_block_rewards_sum(slot, leader_slots.clone())
-                    .await
-                {
+                let usd_price = match client.get_sol_usd_price().await {
                     Ok(e) => Some(e),
                     Err(e) => {
-                        error!("Error fetching block rewards: {}", e);
+                        error!("Error fetching SOL/USD: {}", e);
                         None
                     }
+                };
+
+                if let Some(usd_price) = usd_price {
+                    self.set_usd_price(usd_price);
                 }
-            } else {
-                None
-            };
 
-            if let Some(block_rewards) = block_rewards {
-                metrics.lock().await.set_epoch_block_rewards(block_rewards);
-            }
-
-            let last_block_rewards = match client.get_last_block_rewards().await {
-                Ok(e) => Some(e),
-                Err(e) => {
-                    error!("Error fetching last block rewards: {}", e);
-                    None
+                // Send current slot and leader slots to background task for block rewards processing
+                if let (Some(slot), Some(leader_slots)) = (slot, leader_slots.as_ref()) {
+                    if let Err(_) = slot_tx.send((slot, leader_slots.clone())) {
+                        error!("Failed to send slot info to background block rewards task");
+                    }
                 }
-            };
 
-            if let Some(last_block_rewards) = last_block_rewards {
-                metrics
-                    .lock()
-                    .await
-                    .set_last_block_rewards(last_block_rewards);
+                // Add a small sleep to prevent overwhelming the RPC in the main loop
+                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
             }
-            sleep(Duration::from_secs(60)).await;
-        }
+        })
     }
 
     pub fn set_slot(&self, slot: u64) {

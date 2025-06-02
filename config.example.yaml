@@ -1,4 +1,0 @@
-rpc_url: "YOUR_RPC_URL"
-port: 9090
-vote_account: "YOUR_VOTE_ACCOUNT_PUBKEY"
-identity_account: "YOUR_IDENTITY_ACCOUNT_PUBKEY" 

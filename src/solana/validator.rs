@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use log::{debug, info};
+use log::{debug, info, error};
 use serde::Deserialize;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_rpc_client_api::config::{
@@ -17,6 +17,8 @@ use solana_sdk::sysvar::clock::Clock;
 use solana_sdk::sysvar::stake_history;
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use futures;
+use tokio;
 
 pub struct SolanaClient {
     client: RpcClient,
@@ -62,12 +64,12 @@ impl SolanaClient {
         }
     }
 
-    pub async fn get_slot(&self) -> Result<u64, Box<dyn std::error::Error>> {
+    pub async fn get_slot(&self) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
         let slot = self.client.get_slot().await?;
         Ok(slot)
     }
 
-    pub async fn get_epoch(&self) -> Result<(i64, i64), Box<dyn std::error::Error>> {
+    pub async fn get_epoch(&self) -> Result<(i64, i64), Box<dyn std::error::Error + Send + Sync>> {
         let epoch = self.client.get_epoch_info().await?;
         Ok((
             epoch.epoch as i64,
@@ -75,7 +77,7 @@ impl SolanaClient {
         ))
     }
 
-    pub async fn get_stake_details(&self) -> Result<StakeState, Box<dyn std::error::Error>> {
+    pub async fn get_stake_details(&self) -> Result<StakeState, Box<dyn std::error::Error + Send + Sync>> {
         let program_accounts_config = RpcProgramAccountsConfig {
             account_config: RpcAccountInfoConfig {
                 encoding: Some(solana_account_decoder::UiAccountEncoding::Base64),
@@ -157,21 +159,21 @@ impl SolanaClient {
         }
         Ok(stake_details)
     }
-    pub async fn get_identity_balance(&self) -> Result<u64, Box<dyn std::error::Error>> {
+    pub async fn get_identity_balance(&self) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
         let balance = self
             .client
             .get_balance(&Pubkey::from_str(&self.identity_account)?)
             .await?;
         Ok(balance)
     }
-    pub async fn get_vote_balance(&self) -> Result<u64, Box<dyn std::error::Error>> {
+    pub async fn get_vote_balance(&self) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
         let balance = self
             .client
             .get_balance(&Pubkey::from_str(&self.vote_account)?)
             .await?;
         Ok(balance)
     }
-    pub async fn get_leader_info(&self) -> Result<Vec<u64>, Box<dyn std::error::Error>> {
+    pub async fn get_leader_info(&self) -> Result<Vec<u64>, Box<dyn std::error::Error + Send + Sync>> {
         let epoch_info = self.client.get_epoch_info().await?;
         let epoch_schedule = self.client.get_epoch_schedule().await?;
         let first_slot_in_epoch = epoch_schedule.get_first_slot_in_epoch(epoch_info.epoch);
@@ -195,7 +197,7 @@ impl SolanaClient {
         Ok(leader_slots)
     }
 
-    pub async fn get_block_production(&self) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    pub async fn get_block_production(&self) -> Result<(usize, usize), Box<dyn std::error::Error + Send + Sync>> {
         let blocks = self.client.get_block_production().await?;
         let my_blocks = blocks
             .value
@@ -210,7 +212,7 @@ impl SolanaClient {
         Ok(bp)
     }
 
-    pub async fn get_block_rewards(&self, slot: u64) -> Result<i64, Box<dyn std::error::Error>> {
+    pub async fn get_block_rewards(&self, slot: u64) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
         match self
             .client
             .get_block_with_config(
@@ -247,32 +249,73 @@ impl SolanaClient {
         &mut self,
         current_slot: u64,
         leader_slots: Vec<u64>,
-    ) -> Result<i64, Box<dyn std::error::Error>> {
-        for slot in leader_slots.iter() {
-            // New epoch, reset
-            if let Some(first_slot) = self.block_rewards.keys().min() {
-                if leader_slots[0] != *first_slot {
-                    info!("New epoch detected");
-                    self.block_rewards.clear();
+    ) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
+        // New epoch detection and reset
+        if let Some(first_slot) = self.block_rewards.keys().min() {
+            if !leader_slots.is_empty() && leader_slots[0] != *first_slot {
+                info!("New epoch detected");
+                self.block_rewards.clear();
+            }
+        }
+
+        // Filter slots that need fetching: not already cached, not in future, and within reasonable range
+        let slots_to_fetch: Vec<u64> = leader_slots
+            .iter()
+            .filter(|&slot| {
+                !self.block_rewards.contains_key(slot) 
+                && *slot <= current_slot 
+                && *slot > current_slot.saturating_sub(1000) // Only fetch recent slots
+            })
+            .copied()
+            .collect();
+
+        if slots_to_fetch.is_empty() {
+            let sum: i64 = self.block_rewards.values().sum();
+            return Ok(sum);
+        }
+
+        // Sort by descending order (newest first) to prioritize recent slots
+        let mut sorted_slots = slots_to_fetch;
+        sorted_slots.sort_by(|a, b| b.cmp(a));
+
+        // Process in batches to avoid overwhelming the RPC
+        const BATCH_SIZE: usize = 10;
+        
+        for batch in sorted_slots.chunks(BATCH_SIZE) {
+            info!("Fetching block rewards for {} slots in parallel: {:?}", batch.len(), batch);
+            
+            // Create futures for parallel fetching
+            let futures: Vec<_> = batch
+                .iter()
+                .map(|&slot| self.get_block_rewards(slot))
+                .collect();
+
+            // Execute all requests in parallel
+            let results = futures::future::join_all(futures).await;
+            
+            // Process results
+            for (i, result) in results.into_iter().enumerate() {
+                let slot = batch[i];
+                match result {
+                    Ok(rewards) => {
+                        self.block_rewards.insert(slot, rewards);
+                    }
+                    Err(e) => {
+                        error!("Error fetching block rewards for slot {}: {}", slot, e);
+                        // Continue with other slots, don't fail the entire batch
+                    }
                 }
             }
-            // If we already fetched the leader slot, skip to next.
-            if self.block_rewards.contains_key(slot) {
-                continue;
-            }
-            // If slot is in the future, break out and skip the rest.
-            if *slot > current_slot {
-                break;
-            }
-            info!("Fetching block rewards for slot {}", slot);
-            let block_rewards = self.get_block_rewards(*slot).await?;
-            self.block_rewards.insert(*slot, block_rewards);
+
+            // Add a small delay between batches to be nice to the RPC
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
+
         let sum: i64 = self.block_rewards.values().sum();
         Ok(sum)
     }
 
-    pub async fn get_jito_tips(&self, epoch: i64) -> Result<u64, Box<dyn std::error::Error>> {
+    pub async fn get_jito_tips(&self, epoch: i64) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
         let (addr, _) = Pubkey::find_program_address(
             &[
                 b"TIP_DISTRIBUTION_ACCOUNT",
@@ -287,7 +330,7 @@ impl SolanaClient {
         Ok(balance)
     }
 
-    pub async fn get_vote_credit_rank(&self) -> Result<u32, Box<dyn std::error::Error>> {
+    pub async fn get_vote_credit_rank(&self) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
         let vote_accounts = self
             .client
             .get_vote_accounts_with_config(RpcGetVoteAccountsConfig {
@@ -322,7 +365,7 @@ impl SolanaClient {
         Ok(place)
     }
 
-    pub async fn get_sol_usd_price(&self) -> Result<i64, Box<dyn std::error::Error>> {
+    pub async fn get_sol_usd_price(&self) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
         debug!("Fetching sol price from kraken");
         let resp = reqwest::get("https://api.kraken.com/0/public/Ticker?pair=SOLUSD").await?;
         let data: KrakenResponse = resp.json().await?;
@@ -335,9 +378,9 @@ impl SolanaClient {
         &self,
         current_slot: u64,
         leader_slots: Vec<u64>,
-    ) -> Result<i64, Box<dyn std::error::Error>> {
+    ) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
         if leader_slots.is_empty() {
-            return Ok::<i64, Box<dyn std::error::Error>>(-1);
+            return Ok::<i64, Box<dyn std::error::Error + Send + Sync>>(-1);
         }
         let samples = self.client.get_recent_performance_samples(Some(60)).await?;
 
@@ -366,7 +409,7 @@ impl SolanaClient {
         Ok(((next_slot - current_slot) * average_slot_time_ms) as i64)
     }
 
-    pub async fn get_last_block_rewards(&self) -> Result<i64, Box<dyn std::error::Error>> {
+    pub async fn get_last_block_rewards(&self) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
         let mut keys: Vec<u64> = self.block_rewards.keys().cloned().collect();
         keys.sort();
         let block_rewards: Vec<_> = keys
