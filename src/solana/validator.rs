@@ -280,8 +280,11 @@ impl SolanaClient {
 
         // Process in batches to avoid overwhelming the RPC
         const BATCH_SIZE: usize = 10;
+        let total_start = std::time::Instant::now();
+        let mut total_fetched = 0;
         
         for batch in sorted_slots.chunks(BATCH_SIZE) {
+            let batch_start = std::time::Instant::now();
             info!("Fetching block rewards for {} slots in parallel: {:?}", batch.len(), batch);
             
             // Create futures for parallel fetching
@@ -293,12 +296,14 @@ impl SolanaClient {
             // Execute all requests in parallel
             let results = futures::future::join_all(futures).await;
             
+            let mut batch_success_count = 0;
             // Process results
             for (i, result) in results.into_iter().enumerate() {
                 let slot = batch[i];
                 match result {
                     Ok(rewards) => {
                         self.block_rewards.insert(slot, rewards);
+                        batch_success_count += 1;
                     }
                     Err(e) => {
                         error!("Error fetching block rewards for slot {}: {}", slot, e);
@@ -307,8 +312,22 @@ impl SolanaClient {
                 }
             }
 
+            let batch_duration = batch_start.elapsed();
+            info!("Fetched {} out of {} slots in {:?} (avg: {:.1}ms per slot)", 
+                  batch_success_count, batch.len(), batch_duration,
+                  batch_duration.as_millis() as f64 / batch.len() as f64);
+            
+            total_fetched += batch_success_count;
+
             // Add a small delay between batches to be nice to the RPC
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+
+        let total_duration = total_start.elapsed();
+        if total_fetched > 0 {
+            info!("Total: fetched {} slots in {:?} (avg: {:.1}ms per slot)", 
+                  total_fetched, total_duration,
+                  total_duration.as_millis() as f64 / total_fetched as f64);
         }
 
         let sum: i64 = self.block_rewards.values().sum();
