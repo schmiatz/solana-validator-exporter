@@ -278,6 +278,13 @@ impl SolanaClient {
         let mut sorted_slots = slots_to_fetch;
         sorted_slots.sort_by(|a, b| b.cmp(a));
 
+        // Log how far behind we are from the current slot
+        if let Some(&newest_target_slot) = sorted_slots.first() {
+            let slots_behind = current_slot.saturating_sub(newest_target_slot);
+            info!("Latest Slot: {} | Target Slot: {} is {} slots behind | Fetching {} total slots", 
+                  current_slot, newest_target_slot, slots_behind, sorted_slots.len());
+        }
+
         // Process in batches to avoid overwhelming the RPC
         const BATCH_SIZE: usize = 10;
         let total_start = std::time::Instant::now();
