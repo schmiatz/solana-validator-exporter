@@ -3814,6 +3814,7 @@ dependencies = [
  "axum",
  "clap",
  "env_logger",
+ "futures",
  "log",
  "prometheus-client",
  "reqwest 0.12.9",

@@ -11,7 +11,6 @@ use std::fs::File;
 use std::io::BufReader;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio::task;
 
 /// Prometheus exporter for solana validators
 #[derive(Parser, Debug)]
@@ -40,14 +39,14 @@ async fn main() {
     let config: Config = serde_yaml::from_reader(reader).expect("Error parsing yaml file");
 
     info!("Starting exporter!");
-    let metrics = metrics::exporter::Metrics::new(
+    let metrics = Arc::new(metrics::exporter::Metrics::new(
         config.rpc_url,
         config.identity_account,
         config.vote_account,
-    );
+    ));
     let state = metrics.init_state();
     let state_mut = Arc::new(Mutex::new(state));
-    let _handle = task::spawn(async move { metrics.run_loop().await });
+    let _handle = metrics.clone().run_loop();
     let router = Router::new()
         .route("/metrics", get(metrics_handler))
         .with_state(state_mut);

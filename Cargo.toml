@@ -19,6 +19,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 serde_json = "1.0.132"
 reqwest = { version = "0.12.9", features = ["json"] }
+futures = "0.3"
 
 [[bin]]
 name = "solana-validator-exporter"
