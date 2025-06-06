@@ -5,9 +5,11 @@ This is a Prometheus exporter for Solana validators that supports monitoring mul
 ## Features
 
 - **Multi-Network Support**: Monitor validators on mainnet, testnet, and devnet simultaneously
-- **Multi-Validator Support**: Monitor multiple validators per network
+- **Multi-Validator Support**: Monitor **multiple validators per network** (e.g., 2 on mainnet, 3 on testnet, 1 on devnet)
+- **Flexible Configuration**: Both list-based and legacy single-validator configuration formats
 - **Comprehensive Metrics**: Track validator performance, financial metrics, and network statistics
 - **Network Labels**: All metrics include network and vote account labels for easy identification
+- **Backward Compatibility**: Existing single-validator configurations continue to work
 
 ## Setup
 
@@ -27,12 +29,32 @@ This is a Prometheus exporter for Solana validators that supports monitoring mul
     *   `rpc_url_testnet`: The RPC URL for Solana testnet (optional).
     *   `rpc_url_devnet`: The RPC URL for Solana devnet (optional).
 
-    ### Validator Accounts (at least one validator configuration required)
-    *   `mainnet_vote_account` & `mainnet_identity_account`: Your mainnet validator's vote and identity account public keys.
-    *   `testnet_vote_account` & `testnet_identity_account`: Your testnet validator's accounts (optional).
-    *   `devnet_vote_account` & `devnet_identity_account`: Your devnet validator's accounts (optional).
+    ### Multi-Validator Configuration (Recommended)
+    You can now define multiple validators per network:
+    
+    ```yaml
+    mainnet_validators:
+      - vote_account: "YOUR_FIRST_MAINNET_VOTE_ACCOUNT"
+        identity_account: "YOUR_FIRST_MAINNET_IDENTITY_ACCOUNT"
+      - vote_account: "YOUR_SECOND_MAINNET_VOTE_ACCOUNT"
+        identity_account: "YOUR_SECOND_MAINNET_IDENTITY_ACCOUNT"
+    
+    testnet_validators:
+      - vote_account: "YOUR_FIRST_TESTNET_VOTE_ACCOUNT"
+        identity_account: "YOUR_FIRST_TESTNET_IDENTITY_ACCOUNT"
+      - vote_account: "YOUR_SECOND_TESTNET_VOTE_ACCOUNT"
+        identity_account: "YOUR_SECOND_TESTNET_IDENTITY_ACCOUNT"
+      - vote_account: "YOUR_THIRD_TESTNET_VOTE_ACCOUNT"
+        identity_account: "YOUR_THIRD_TESTNET_IDENTITY_ACCOUNT"
+    ```
 
-    **Note**: The naming convention determines which RPC URL is used (e.g., `mainnet_*` accounts use `rpc_url_mainnet`).
+    ### Legacy Single-Validator Configuration (Still Supported)
+    For backward compatibility, you can still use the single-validator format:
+    *   `mainnet_vote_account` & `mainnet_identity_account`: Your mainnet validator's accounts.
+    *   `testnet_vote_account` & `testnet_identity_account`: Your testnet validator's accounts.
+    *   `devnet_vote_account` & `devnet_identity_account`: Your devnet validator's accounts.
+
+    **Note**: The multi-validator format takes precedence over the legacy format if both are defined.
 
 ## Running the Exporter
 
@@ -86,10 +108,16 @@ All metrics now include the following labels for easy filtering and identificati
 - `network`: The Solana network (mainnet, testnet, or devnet)
 - `vote_account`: The validator's vote account public key
 
-Example metric with labels:
+Example metrics with multiple validators:
 ```
-solana_slot{network="mainnet",vote_account="YourVoteAccount..."} 123456789
-solana_slot{network="testnet",vote_account="YourTestnetVoteAccount..."} 987654321
+# Mainnet validators
+solana_slot{network="mainnet",vote_account="FirstMainnetVoteAccount..."} 123456789
+solana_slot{network="mainnet",vote_account="SecondMainnetVoteAccount..."} 123456789
+
+# Testnet validators  
+solana_slot{network="testnet",vote_account="FirstTestnetVoteAccount..."} 987654321
+solana_slot{network="testnet",vote_account="SecondTestnetVoteAccount..."} 987654321
+solana_slot{network="testnet",vote_account="ThirdTestnetVoteAccount..."} 987654321
 ```
 
-This allows you to create separate Grafana dashboards or alerts for different networks and validators.
+This allows you to create separate Grafana dashboards or alerts for different networks and validators, or aggregate metrics across multiple validators within the same network.
