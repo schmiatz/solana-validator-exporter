@@ -1,0 +1,22 @@
+# Example configuration for multiple mainnet validators
+port: 9090
+
+# RPC URL for mainnet
+rpc_url_mainnet: "https://blissful-capable-gadget.solana-mainnet.quiknode.pro/2e8bce0273b2f800e7a4d2aed9becc29bcc72831/"
+
+# Multiple mainnet validators
+mainnet_validators:
+  - vote_account: "DumiCKHVqoCQKD8roLApzR5Fit8qGV5fVQsJV9sTZk4a"
+    identity_account: "Awes4Tr6TX8JDzEhCZY2QVNimT6iD1zWHzf1vNyGvpLM"
+  - vote_account: "ANOTHER_VOTE_ACCOUNT_PUBKEY"
+    identity_account: "ANOTHER_IDENTITY_ACCOUNT_PUBKEY"
+  - vote_account: "THIRD_VOTE_ACCOUNT_PUBKEY"
+    identity_account: "THIRD_IDENTITY_ACCOUNT_PUBKEY"
+
+# Optional: You can also add validators for other networks
+# rpc_url_testnet: "https://api.testnet.solana.com"
+# testnet_validators:
+#   - vote_account: "TESTNET_VOTE_ACCOUNT_1"
+#     identity_account: "TESTNET_IDENTITY_ACCOUNT_1"
+#   - vote_account: "TESTNET_VOTE_ACCOUNT_2"
+#     identity_account: "TESTNET_IDENTITY_ACCOUNT_2" 

@@ -28,15 +28,27 @@ struct Config {
     rpc_url_mainnet: Option<String>,
     rpc_url_testnet: Option<String>,
     rpc_url_devnet: Option<String>,
-    // Mainnet validator accounts
+    // Mainnet validator accounts - now supports multiple validators
+    mainnet_validators: Option<Vec<ValidatorAccount>>,
+    // Legacy single validator support (for backward compatibility)
     mainnet_vote_account: Option<String>,
     mainnet_identity_account: Option<String>,
-    // Testnet validator accounts
+    // Testnet validator accounts - now supports multiple validators
+    testnet_validators: Option<Vec<ValidatorAccount>>,
+    // Legacy single validator support (for backward compatibility)
     testnet_vote_account: Option<String>,
     testnet_identity_account: Option<String>,
-    // Devnet validator accounts
+    // Devnet validator accounts - now supports multiple validators
+    devnet_validators: Option<Vec<ValidatorAccount>>,
+    // Legacy single validator support (for backward compatibility)
     devnet_vote_account: Option<String>,
     devnet_identity_account: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ValidatorAccount {
+    vote_account: String,
+    identity_account: String,
 }
 
 #[derive(Debug, Clone)]
@@ -61,45 +73,84 @@ async fn main() {
     let mut validator_configs = Vec::new();
 
     // Check mainnet configuration
-    if let (Some(rpc_url), Some(vote_account), Some(identity_account)) = (
-        &config.rpc_url_mainnet,
-        &config.mainnet_vote_account,
-        &config.mainnet_identity_account,
-    ) {
-        validator_configs.push(ValidatorConfig {
-            network: "mainnet".to_string(),
-            rpc_url: rpc_url.clone(),
-            vote_account: vote_account.clone(),
-            identity_account: identity_account.clone(),
-        });
+    if let Some(rpc_url) = &config.rpc_url_mainnet {
+        // First check for new array format
+        if let Some(validators) = &config.mainnet_validators {
+            for validator in validators {
+                validator_configs.push(ValidatorConfig {
+                    network: "mainnet".to_string(),
+                    rpc_url: rpc_url.clone(),
+                    vote_account: validator.vote_account.clone(),
+                    identity_account: validator.identity_account.clone(),
+                });
+            }
+        }
+        // Fall back to legacy single validator format
+        else if let (Some(vote_account), Some(identity_account)) = (
+            &config.mainnet_vote_account,
+            &config.mainnet_identity_account,
+        ) {
+            validator_configs.push(ValidatorConfig {
+                network: "mainnet".to_string(),
+                rpc_url: rpc_url.clone(),
+                vote_account: vote_account.clone(),
+                identity_account: identity_account.clone(),
+            });
+        }
     }
 
     // Check testnet configuration
-    if let (Some(rpc_url), Some(vote_account), Some(identity_account)) = (
-        &config.rpc_url_testnet,
-        &config.testnet_vote_account,
-        &config.testnet_identity_account,
-    ) {
-        validator_configs.push(ValidatorConfig {
-            network: "testnet".to_string(),
-            rpc_url: rpc_url.clone(),
-            vote_account: vote_account.clone(),
-            identity_account: identity_account.clone(),
-        });
+    if let Some(rpc_url) = &config.rpc_url_testnet {
+        // First check for new array format
+        if let Some(validators) = &config.testnet_validators {
+            for validator in validators {
+                validator_configs.push(ValidatorConfig {
+                    network: "testnet".to_string(),
+                    rpc_url: rpc_url.clone(),
+                    vote_account: validator.vote_account.clone(),
+                    identity_account: validator.identity_account.clone(),
+                });
+            }
+        }
+        // Fall back to legacy single validator format
+        else if let (Some(vote_account), Some(identity_account)) = (
+            &config.testnet_vote_account,
+            &config.testnet_identity_account,
+        ) {
+            validator_configs.push(ValidatorConfig {
+                network: "testnet".to_string(),
+                rpc_url: rpc_url.clone(),
+                vote_account: vote_account.clone(),
+                identity_account: identity_account.clone(),
+            });
+        }
     }
 
     // Check devnet configuration
-    if let (Some(rpc_url), Some(vote_account), Some(identity_account)) = (
-        &config.rpc_url_devnet,
-        &config.devnet_vote_account,
-        &config.devnet_identity_account,
-    ) {
-        validator_configs.push(ValidatorConfig {
-            network: "devnet".to_string(),
-            rpc_url: rpc_url.clone(),
-            vote_account: vote_account.clone(),
-            identity_account: identity_account.clone(),
-        });
+    if let Some(rpc_url) = &config.rpc_url_devnet {
+        // First check for new array format
+        if let Some(validators) = &config.devnet_validators {
+            for validator in validators {
+                validator_configs.push(ValidatorConfig {
+                    network: "devnet".to_string(),
+                    rpc_url: rpc_url.clone(),
+                    vote_account: validator.vote_account.clone(),
+                    identity_account: validator.identity_account.clone(),
+                });
+            }
+        }
+        // Fall back to legacy single validator format
+        else if let (Some(vote_account), Some(identity_account)) = (
+            &config.devnet_vote_account,
+            &config.devnet_identity_account,
+        ) {
+            validator_configs.push(ValidatorConfig {
+                network: "devnet".to_string(),
+                rpc_url: rpc_url.clone(),
+                vote_account: vote_account.clone(),
+                identity_account: identity_account.clone(),
+            });
+        }
     }
 
     if validator_configs.is_empty() {
