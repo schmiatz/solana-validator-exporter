@@ -52,6 +52,7 @@ pub struct Metrics {
     pub epoch_block_rewards: Family<MethodLabels, Gauge>,
     pub ms_to_next_slot: Family<MethodLabels, Gauge>,
     pub last_block_rewards: Family<MethodLabels, Gauge>,
+    pub vote_latency_slots: Family<MethodLabels, Gauge>,
 }
 
 impl Metrics {
@@ -74,6 +75,7 @@ impl Metrics {
             epoch_block_rewards: Family::default(),
             ms_to_next_slot: Family::default(),
             last_block_rewards: Family::default(),
+            vote_latency_slots: Family::default(),
         }
     }
 
@@ -145,6 +147,12 @@ impl Metrics {
             "Average of last non-zero block rewards",
             self.last_block_rewards.clone(),
         );
+
+        state.registry.register(
+            "solana_vote_latency_slots",
+            "Latest vote latency in slots (transaction_slot - voted_slot)",
+            self.vote_latency_slots.clone(),
+        );
     }
 
     pub fn run_loop(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
@@ -168,10 +176,17 @@ impl Metrics {
             tokio::spawn(async move {
                 while let Some((current_slot, current_epoch, leader_slots)) = slot_rx.recv().await {
                     if !leader_slots.is_empty() {
-                        match bg_client.get_block_rewards_sum(current_slot, current_epoch, leader_slots).await {
-                            Ok(block_rewards) => {
+                        // Use the optimized function that fetches both rewards and vote latency in one pass
+                        match bg_client.get_block_rewards_and_vote_latency_sum(current_slot, current_epoch, leader_slots).await {
+                            Ok((block_rewards, vote_latency)) => {
                                 bg_self.set_epoch_block_rewards(block_rewards);
                                 
+                                // Set vote latency if found
+                                if let Some(latency) = vote_latency {
+                                    bg_self.set_vote_latency_slots(latency);
+                                }
+                                
+                                // Get last block rewards separately (this is cached, so it's fast)
                                 match bg_client.get_last_block_rewards().await {
                                     Ok(last_rewards) => {
                                         bg_self.set_last_block_rewards(last_rewards);
@@ -182,7 +197,7 @@ impl Metrics {
                                 }
                             }
                             Err(e) => {
-                                error!("Error fetching block rewards: {}", e);
+                                error!("Error fetching block rewards and vote latency: {}", e);
                             }
                         }
                     }
@@ -519,6 +534,15 @@ impl Metrics {
                 vote_account: self.vote_account.clone(),
             })
             .set(last_block_rewards);
+    }
+
+    pub fn set_vote_latency_slots(&self, latency: u64) {
+        self.vote_latency_slots
+            .get_or_create(&MethodLabels {
+                network: self.network.clone(),
+                vote_account: self.vote_account.clone(),
+            })
+            .set(latency as i64);
     }
 }
 
