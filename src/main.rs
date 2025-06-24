@@ -69,13 +69,18 @@ async fn main() {
     // Parse the YAML file
     let config: Config = serde_yaml::from_reader(reader).expect("Error parsing yaml file");
 
+    // Debug: Print the parsed config to see what was read
+    println!("Debug: Parsed config: {:?}", config);
+
     // Validate configuration and build validator configs
     let mut validator_configs = Vec::new();
 
     // Check mainnet configuration
     if let Some(rpc_url) = &config.rpc_url_mainnet {
+        println!("Debug: Found mainnet RPC URL: {}", rpc_url);
         // First check for new array format
         if let Some(validators) = &config.mainnet_validators {
+            println!("Debug: Found {} mainnet validators in array format", validators.len());
             for validator in validators {
                 validator_configs.push(ValidatorConfig {
                     network: "mainnet".to_string(),
@@ -90,13 +95,18 @@ async fn main() {
             &config.mainnet_vote_account,
             &config.mainnet_identity_account,
         ) {
+            println!("Debug: Found mainnet validator in legacy format: {} / {}", vote_account, identity_account);
             validator_configs.push(ValidatorConfig {
                 network: "mainnet".to_string(),
                 rpc_url: rpc_url.clone(),
                 vote_account: vote_account.clone(),
                 identity_account: identity_account.clone(),
             });
+        } else {
+            println!("Debug: No mainnet validators found in either format");
         }
+    } else {
+        println!("Debug: No mainnet RPC URL found");
     }
 
     // Check testnet configuration
