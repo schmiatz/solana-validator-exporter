@@ -471,6 +471,32 @@ impl SolanaClient {
         }
         self.current_epoch = Some(current_epoch);
 
+        // For vote latency, we want to check recent slots (not just leader slots)
+        // but exclude our own leader slots since validators don't vote on their own slots
+        let recent_slots_for_vote_latency: Vec<u64> = (current_slot.saturating_sub(200)..=current_slot)
+            .filter(|&slot| {
+                // Skip our own leader slots since validators don't vote on their own slots
+                !leader_slots.contains(&slot)
+            })
+            .collect();
+
+        // PRIORITY: Check recent non-leader slots for vote latency first
+        // since validators don't vote on their own leader slots
+        let mut latest_vote_latency = None;
+        if !recent_slots_for_vote_latency.is_empty() {
+            info!("Checking {} recent non-leader slots for vote latency (excluding our {} leader slots)", 
+                  recent_slots_for_vote_latency.len(), leader_slots.len());
+            match self.get_latest_vote_latency_slots(&recent_slots_for_vote_latency).await {
+                Ok(vote_latency) => {
+                    latest_vote_latency = vote_latency;
+                    info!("Found vote latency in recent slots: {:?}", vote_latency);
+                }
+                Err(e) => {
+                    error!("Error fetching vote latency from recent slots: {}", e);
+                }
+            }
+        }
+
         // Filter slots that need fetching for block rewards: not already cached, not in future, and within reasonable range
         let slots_to_fetch: Vec<u64> = leader_slots
             .iter()
@@ -482,31 +508,9 @@ impl SolanaClient {
             .copied()
             .collect();
 
-        // For vote latency, we want to check recent slots (not just leader slots)
-        // but exclude our own leader slots since validators don't vote on their own slots
-        let recent_slots_for_vote_latency: Vec<u64> = (current_slot.saturating_sub(200)..=current_slot)
-            .filter(|&slot| {
-                // Skip our own leader slots since validators don't vote on their own slots
-                !leader_slots.contains(&slot)
-            })
-            .collect();
-
         if slots_to_fetch.is_empty() {
             let sum: i64 = self.block_rewards.values().sum();
-            
-            // Even if no new block rewards to fetch, still check for vote latency
-            if !recent_slots_for_vote_latency.is_empty() {
-                info!("Checking {} recent slots for vote latency (excluding our {} leader slots)", 
-                      recent_slots_for_vote_latency.len(), leader_slots.len());
-                match self.get_latest_vote_latency_slots(&recent_slots_for_vote_latency).await {
-                    Ok(vote_latency) => return Ok((sum, vote_latency)),
-                    Err(e) => {
-                        error!("Error fetching vote latency: {}", e);
-                        return Ok((sum, None));
-                    }
-                }
-            }
-            return Ok((sum, None));
+            return Ok((sum, latest_vote_latency));
         }
 
         // Sort by descending order (newest first) to prioritize recent slots
@@ -516,7 +520,7 @@ impl SolanaClient {
         // Log how far behind we are from the current slot
         if let Some(&newest_target_slot) = sorted_slots.first() {
             let slots_behind = current_slot.saturating_sub(newest_target_slot);
-            info!("Latest Slot: {} | Target Slot: {} is {} slots behind | Fetching {} total slots", 
+            info!("Latest Slot: {} | Target Slot: {} is {} slots behind | Fetching {} total slots for block rewards", 
                   current_slot, newest_target_slot, slots_behind, sorted_slots.len());
         }
 
@@ -524,11 +528,10 @@ impl SolanaClient {
         const BATCH_SIZE: usize = 10;
         let total_start = std::time::Instant::now();
         let mut total_fetched = 0;
-        let mut latest_vote_latency = None;
         
         for batch in sorted_slots.chunks(BATCH_SIZE) {
             let batch_start = std::time::Instant::now();
-            info!("Fetching block rewards and vote latency for {} slots in parallel: {:?}", batch.len(), batch);
+            info!("Fetching block rewards for {} slots in parallel: {:?}", batch.len(), batch);
             
             // Create futures for parallel fetching with full transaction details
             let futures: Vec<_> = batch
@@ -544,14 +547,9 @@ impl SolanaClient {
             for (i, result) in results.into_iter().enumerate() {
                 let slot = batch[i];
                 match result {
-                    Ok((rewards, vote_latency)) => {
+                    Ok((rewards, _)) => { // Ignore vote latency from leader slots since we already checked recent slots
                         self.block_rewards.insert(slot, rewards);
                         batch_success_count += 1;
-                        
-                        // Update latest vote latency if found (prioritize newer slots)
-                        if vote_latency.is_some() {
-                            latest_vote_latency = vote_latency;
-                        }
                     }
                     Err(e) => {
                         error!("Error fetching block data for slot {}: {}", slot, e);
@@ -579,21 +577,6 @@ impl SolanaClient {
         }
 
         let sum: i64 = self.block_rewards.values().sum();
-        
-        // If we didn't find vote latency in leader slots, check recent non-leader slots
-        if latest_vote_latency.is_none() && !recent_slots_for_vote_latency.is_empty() {
-            info!("No vote latency found in leader slots, checking {} recent non-leader slots", 
-                  recent_slots_for_vote_latency.len());
-            match self.get_latest_vote_latency_slots(&recent_slots_for_vote_latency).await {
-                Ok(vote_latency) => {
-                    latest_vote_latency = vote_latency;
-                }
-                Err(e) => {
-                    error!("Error fetching vote latency from recent slots: {}", e);
-                }
-            }
-        }
-        
         Ok((sum, latest_vote_latency))
     }
 
