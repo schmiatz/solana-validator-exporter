@@ -471,67 +471,39 @@ impl SolanaClient {
         }
         self.current_epoch = Some(current_epoch);
 
-        // For vote latency, we want to check recent slots (not just leader slots)
-        // but exclude our own leader slots since validators don't vote on their own slots
-        let recent_slots_for_vote_latency: Vec<u64> = (current_slot.saturating_sub(200)..=current_slot)
-            .filter(|&slot| {
-                // Skip our own leader slots since validators don't vote on their own slots
-                !leader_slots.contains(&slot)
-            })
-            .collect();
-
-        // PRIORITY: Check recent non-leader slots for vote latency first
-        // since validators don't vote on their own leader slots
-        let mut latest_vote_latency = None;
-        if !recent_slots_for_vote_latency.is_empty() {
-            info!("Checking {} recent non-leader slots for vote latency (excluding our {} leader slots)", 
-                  recent_slots_for_vote_latency.len(), leader_slots.len());
-            match self.get_latest_vote_latency_slots(&recent_slots_for_vote_latency).await {
-                Ok(vote_latency) => {
-                    latest_vote_latency = vote_latency;
-                    info!("Found vote latency in recent slots: {:?}", vote_latency);
-                }
-                Err(e) => {
-                    error!("Error fetching vote latency from recent slots: {}", e);
-                }
-            }
-        }
-
-        // Filter slots that need fetching for block rewards: not already cached, not in future, and within reasonable range
-        let slots_to_fetch: Vec<u64> = leader_slots
+        // Get all recent slots we need to check (last 200 slots)
+        let recent_slots: Vec<u64> = (current_slot.saturating_sub(200)..=current_slot).collect();
+        
+        // Filter leader slots that need block rewards fetching (not already cached)
+        let leader_slots_to_fetch: Vec<u64> = leader_slots
             .iter()
             .filter(|&slot| {
+                recent_slots.contains(slot) && // Only check slots in our recent range
                 !self.block_rewards.contains_key(slot) 
                 && *slot <= current_slot 
-                && *slot > current_slot.saturating_sub(1000) // Only fetch recent slots
             })
             .copied()
             .collect();
 
-        if slots_to_fetch.is_empty() {
+        // If no new leader slots to fetch and no recent slots to check, return early
+        if leader_slots_to_fetch.is_empty() && recent_slots.is_empty() {
             let sum: i64 = self.block_rewards.values().sum();
-            return Ok((sum, latest_vote_latency));
+            return Ok((sum, None));
         }
 
-        // Sort by descending order (newest first) to prioritize recent slots
-        let mut sorted_slots = slots_to_fetch;
-        sorted_slots.sort_by(|a, b| b.cmp(a));
+        info!("Checking {} recent slots for vote latency and {} leader slots for block rewards", 
+              recent_slots.len(), leader_slots_to_fetch.len());
 
-        // Log how far behind we are from the current slot
-        if let Some(&newest_target_slot) = sorted_slots.first() {
-            let slots_behind = current_slot.saturating_sub(newest_target_slot);
-            info!("Latest Slot: {} | Target Slot: {} is {} slots behind | Fetching {} total slots for block rewards", 
-                  current_slot, newest_target_slot, slots_behind, sorted_slots.len());
-        }
-
-        // Process in batches to avoid overwhelming the RPC
+        // Process all slots in batches to avoid overwhelming the RPC
         const BATCH_SIZE: usize = 10;
         let total_start = std::time::Instant::now();
         let mut total_fetched = 0;
+        let mut latest_vote_latency = None;
         
-        for batch in sorted_slots.chunks(BATCH_SIZE) {
+        // Process slots in batches
+        for batch in recent_slots.chunks(BATCH_SIZE) {
             let batch_start = std::time::Instant::now();
-            info!("Fetching block rewards for {} slots in parallel: {:?}", batch.len(), batch);
+            info!("Fetching {} slots in parallel: {:?}", batch.len(), batch);
             
             // Create futures for parallel fetching with full transaction details
             let futures: Vec<_> = batch
@@ -546,13 +518,27 @@ impl SolanaClient {
             // Process results
             for (i, result) in results.into_iter().enumerate() {
                 let slot = batch[i];
+                let is_leader_slot = leader_slots.contains(&slot);
+                
                 match result {
-                    Ok((rewards, _)) => { // Ignore vote latency from leader slots since we already checked recent slots
-                        self.block_rewards.insert(slot, rewards);
+                    Ok((rewards, vote_latency)) => {
+                        // Store block rewards if this is a leader slot and we need to fetch it
+                        if is_leader_slot && leader_slots_to_fetch.contains(&slot) {
+                            self.block_rewards.insert(slot, rewards);
+                        }
+                        
+                        // Check for vote latency if this is NOT a leader slot
+                        if !is_leader_slot && vote_latency.is_some() {
+                            latest_vote_latency = vote_latency;
+                            info!("Found vote latency in non-leader slot {}: {:?}", slot, vote_latency);
+                        }
+                        
                         batch_success_count += 1;
                     }
                     Err(e) => {
-                        error!("Error fetching block data for slot {}: {}", slot, e);
+                        if !e.to_string().contains("Block not available") {
+                            error!("Error fetching block data for slot {}: {}", slot, e);
+                        }
                         // Continue with other slots, don't fail the entire batch
                     }
                 }
