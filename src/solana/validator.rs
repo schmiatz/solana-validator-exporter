@@ -471,7 +471,7 @@ impl SolanaClient {
         }
         self.current_epoch = Some(current_epoch);
 
-        // Filter slots that need fetching: not already cached, not in future, and within reasonable range
+        // Filter slots that need fetching for block rewards: not already cached, not in future, and within reasonable range
         let slots_to_fetch: Vec<u64> = leader_slots
             .iter()
             .filter(|&slot| {
@@ -482,8 +482,30 @@ impl SolanaClient {
             .copied()
             .collect();
 
+        // For vote latency, we want to check recent slots (not just leader slots)
+        // but exclude our own leader slots since validators don't vote on their own slots
+        let recent_slots_for_vote_latency: Vec<u64> = (current_slot.saturating_sub(200)..=current_slot)
+            .filter(|&slot| {
+                // Skip our own leader slots since validators don't vote on their own slots
+                !leader_slots.contains(&slot)
+            })
+            .collect();
+
         if slots_to_fetch.is_empty() {
             let sum: i64 = self.block_rewards.values().sum();
+            
+            // Even if no new block rewards to fetch, still check for vote latency
+            if !recent_slots_for_vote_latency.is_empty() {
+                info!("Checking {} recent slots for vote latency (excluding our {} leader slots)", 
+                      recent_slots_for_vote_latency.len(), leader_slots.len());
+                match self.get_latest_vote_latency_slots(&recent_slots_for_vote_latency).await {
+                    Ok(vote_latency) => return Ok((sum, vote_latency)),
+                    Err(e) => {
+                        error!("Error fetching vote latency: {}", e);
+                        return Ok((sum, None));
+                    }
+                }
+            }
             return Ok((sum, None));
         }
 
@@ -557,6 +579,21 @@ impl SolanaClient {
         }
 
         let sum: i64 = self.block_rewards.values().sum();
+        
+        // If we didn't find vote latency in leader slots, check recent non-leader slots
+        if latest_vote_latency.is_none() && !recent_slots_for_vote_latency.is_empty() {
+            info!("No vote latency found in leader slots, checking {} recent non-leader slots", 
+                  recent_slots_for_vote_latency.len());
+            match self.get_latest_vote_latency_slots(&recent_slots_for_vote_latency).await {
+                Ok(vote_latency) => {
+                    latest_vote_latency = vote_latency;
+                }
+                Err(e) => {
+                    error!("Error fetching vote latency from recent slots: {}", e);
+                }
+            }
+        }
+        
         Ok((sum, latest_vote_latency))
     }
 
