@@ -804,6 +804,104 @@ impl SolanaClient {
         Ok(None)
     }
 
+    /// Checks only the current slot for vote latency. This is much faster and provides real-time detection.
+    /// Returns the vote latency if a vote transaction from our validator is found in the current slot.
+    pub async fn get_current_slot_vote_latency(&self, current_slot: u64) -> Result<Option<u64>, Box<dyn std::error::Error + Send + Sync>> {
+        match self.client.get_block_with_config(
+            current_slot,
+            RpcBlockConfig {
+                encoding: Some(UiTransactionEncoding::JsonParsed),
+                transaction_details: Some(TransactionDetails::Full),
+                rewards: Some(false), // We don't need rewards for vote latency
+                commitment: None,
+                max_supported_transaction_version: Some(0),
+            },
+        ).await {
+            Ok(block) => {
+                if let Some(transactions) = block.transactions {
+                    for (tx_idx, tx_with_meta) in transactions.iter().enumerate() {
+                        if let EncodedTransaction::Json(tx_json) = &tx_with_meta.transaction {
+                            // Check if this transaction is signed by our validator's identity key
+                            let message = &tx_json.message;
+                            let account_keys = match message {
+                                UiMessage::Parsed(msg) => &msg.account_keys,
+                                _ => continue,
+                            };
+                            
+                            // Check if our identity key is in the account keys (as a signer)
+                            let is_signed_by_us = account_keys.iter().any(|key| key.pubkey == self.identity_account);
+                            if !is_signed_by_us {
+                                continue;
+                            }
+                            
+                            // Check if our vote account is in the account keys
+                            let has_our_vote_account = account_keys.iter().any(|key| key.pubkey == self.vote_account);
+                            if !has_our_vote_account {
+                                continue;
+                            }
+                            
+                            let instructions = match message {
+                                UiMessage::Parsed(msg) => &msg.instructions,
+                                _ => continue,
+                            };
+                            
+                            for (_instr_idx, instr) in instructions.iter().enumerate() {
+                                if let UiInstruction::Parsed(instruction) = instr {
+                                    // Convert the instruction to JSON string to access its fields
+                                    if let Ok(instruction_json) = serde_json::to_string(&instruction) {
+                                        if let Ok(instruction_value) = serde_json::from_str::<serde_json::Value>(&instruction_json) {
+                                            if let Some(program) = instruction_value.get("program").and_then(|v| v.as_str()) {
+                                                if program == "vote" {
+                                                    log::info!("Found vote instruction from our validator in current slot {}!", current_slot);
+                                                    
+                                                    // Try to find lockouts in the vote instruction
+                                                    let lockouts = instruction_value
+                                                        .get("parsed")
+                                                        .and_then(|p| p.get("info"))
+                                                        .and_then(|i| i.get("towerSync"))
+                                                        .and_then(|t| t.get("lockouts"));
+                                                    
+                                                    if let Some(lockouts) = lockouts {
+                                                        if let Some(lockouts_arr) = lockouts.as_array() {
+                                                            if !lockouts_arr.is_empty() {
+                                                                let mut highest_slot = 0u64;
+                                                                for lockout in lockouts_arr {
+                                                                    if let Some(slot_val) = lockout.get("slot").and_then(|v| v.as_u64()) {
+                                                                        if slot_val > highest_slot {
+                                                                            highest_slot = slot_val;
+                                                                        }
+                                                                    }
+                                                                }
+                                                                if highest_slot > 0 {
+                                                                    let latency = current_slot.saturating_sub(highest_slot);
+                                                                    log::info!("Vote latency found in current slot: {} slots (tx slot: {}, voted slot: {})", latency, current_slot, highest_slot);
+                                                                    return Ok(Some(latency));
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // No vote transaction found in current slot
+                Ok(None)
+            }
+            Err(e) => {
+                if !e.to_string().contains("Block not available") {
+                    log::debug!("Error fetching current slot {}: {}", current_slot, e);
+                }
+                Err(Box::new(e))
+            }
+        }
+    }
+
     /// Efficiently processes multiple slots, extracting both block rewards and vote latency from each slot.
     /// This method fetches each slot only once and extracts both metrics based on whether it's a leader slot.
     pub async fn get_efficient_slot_metrics(

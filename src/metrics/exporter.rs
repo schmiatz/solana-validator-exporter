@@ -175,15 +175,10 @@ impl Metrics {
             let bg_self = self.clone();
             tokio::spawn(async move {
                 while let Some((current_slot, current_epoch, leader_slots)) = slot_rx.recv().await {
-                    // Use the new efficient method that fetches each slot only once
+                    // Use the efficient method for block rewards (looking back through leader slots)
                     match bg_client.get_efficient_slot_metrics(current_slot, current_epoch, leader_slots).await {
-                        Ok((block_rewards, vote_latency)) => {
+                        Ok((block_rewards, _)) => {
                             bg_self.set_epoch_block_rewards(block_rewards);
-                            
-                            // Set vote latency if found
-                            if let Some(latency) = vote_latency {
-                                bg_self.set_vote_latency_slots(latency);
-                            }
                             
                             // Get last block rewards separately (this is cached, so it's fast)
                             match bg_client.get_last_block_rewards().await {
@@ -213,6 +208,21 @@ impl Metrics {
 
                 if let Some(slot) = slot {
                     self.set_slot(slot);
+                    
+                    // Check for vote latency in the current slot (real-time detection)
+                    match client.get_current_slot_vote_latency(slot).await {
+                        Ok(Some(latency)) => {
+                            self.set_vote_latency_slots(latency);
+                            log::info!("Updated vote latency metric: {} slots", latency);
+                        }
+                        Ok(None) => {
+                            // No vote transaction in current slot, keep the metric at its last value
+                            // This is fine - we don't want to reset it to 0
+                        }
+                        Err(e) => {
+                            error!("Error fetching current slot vote latency: {}", e);
+                        }
+                    }
                 }
 
                 let epoch_info = match client.get_epoch().await {
