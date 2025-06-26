@@ -175,30 +175,28 @@ impl Metrics {
             let bg_self = self.clone();
             tokio::spawn(async move {
                 while let Some((current_slot, current_epoch, leader_slots)) = slot_rx.recv().await {
-                    if !leader_slots.is_empty() {
-                        // Use the optimized function that fetches both rewards and vote latency in one pass
-                        match bg_client.get_block_rewards_and_vote_latency_sum(current_slot, current_epoch, leader_slots).await {
-                            Ok((block_rewards, vote_latency)) => {
-                                bg_self.set_epoch_block_rewards(block_rewards);
-                                
-                                // Set vote latency if found
-                                if let Some(latency) = vote_latency {
-                                    bg_self.set_vote_latency_slots(latency);
+                    // Use the new efficient method that fetches each slot only once
+                    match bg_client.get_efficient_slot_metrics(current_slot, current_epoch, leader_slots).await {
+                        Ok((block_rewards, vote_latency)) => {
+                            bg_self.set_epoch_block_rewards(block_rewards);
+                            
+                            // Set vote latency if found
+                            if let Some(latency) = vote_latency {
+                                bg_self.set_vote_latency_slots(latency);
+                            }
+                            
+                            // Get last block rewards separately (this is cached, so it's fast)
+                            match bg_client.get_last_block_rewards().await {
+                                Ok(last_rewards) => {
+                                    bg_self.set_last_block_rewards(last_rewards);
                                 }
-                                
-                                // Get last block rewards separately (this is cached, so it's fast)
-                                match bg_client.get_last_block_rewards().await {
-                                    Ok(last_rewards) => {
-                                        bg_self.set_last_block_rewards(last_rewards);
-                                    }
-                                    Err(e) => {
-                                        error!("Error fetching last block rewards: {}", e);
-                                    }
+                                Err(e) => {
+                                    error!("Error fetching last block rewards: {}", e);
                                 }
                             }
-                            Err(e) => {
-                                error!("Error fetching block rewards and vote latency: {}", e);
-                            }
+                        }
+                        Err(e) => {
+                            error!("Error fetching efficient slot metrics: {}", e);
                         }
                     }
                 }

@@ -803,4 +803,236 @@ impl SolanaClient {
         log::warn!("No recent vote latency found for identity account {} in the checked slots", self.identity_account);
         Ok(None)
     }
+
+    /// Efficiently processes multiple slots, extracting both block rewards and vote latency from each slot.
+    /// This method fetches each slot only once and extracts both metrics based on whether it's a leader slot.
+    pub async fn get_efficient_slot_metrics(
+        &mut self,
+        current_slot: u64,
+        current_epoch: u64,
+        leader_slots: Vec<u64>,
+    ) -> Result<(i64, Option<u64>), Box<dyn std::error::Error + Send + Sync>> {
+        // New epoch detection and reset
+        if let Some(cached_epoch) = self.current_epoch {
+            if current_epoch != cached_epoch {
+                info!("New epoch detected: {} -> {}", cached_epoch, current_epoch);
+                self.block_rewards.clear();
+            }
+        }
+        self.current_epoch = Some(current_epoch);
+
+        // Get all recent slots we need to check (last 200 slots)
+        let recent_slots: Vec<u64> = (current_slot.saturating_sub(200)..=current_slot).collect();
+        
+        // Filter leader slots that need block rewards fetching (not already cached)
+        let leader_slots_to_fetch: Vec<u64> = leader_slots
+            .iter()
+            .filter(|&slot| {
+                recent_slots.contains(slot) && // Only check slots in our recent range
+                !self.block_rewards.contains_key(slot) 
+                && *slot <= current_slot 
+            })
+            .copied()
+            .collect();
+
+        info!("Processing {} recent slots for metrics ({} leader slots to fetch)", 
+              recent_slots.len(), leader_slots_to_fetch.len());
+
+        // Process all slots in batches to avoid overwhelming the RPC
+        const BATCH_SIZE: usize = 10;
+        let total_start = std::time::Instant::now();
+        let mut total_fetched = 0;
+        let mut latest_vote_latency = None;
+        
+        // Process slots in batches
+        for batch in recent_slots.chunks(BATCH_SIZE) {
+            let batch_start = std::time::Instant::now();
+            info!("Fetching {} slots in parallel: {:?}", batch.len(), batch);
+            
+            // Create futures for parallel fetching with single fetch per slot
+            let futures: Vec<_> = batch
+                .iter()
+                .map(|&slot| {
+                    let is_leader_slot = leader_slots.contains(&slot);
+                    self.get_slot_metrics(slot, is_leader_slot)
+                })
+                .collect();
+
+            // Execute all requests in parallel
+            let results = futures::future::join_all(futures).await;
+            
+            let mut batch_success_count = 0;
+            // Process results
+            for (i, result) in results.into_iter().enumerate() {
+                let slot = batch[i];
+                let is_leader_slot = leader_slots.contains(&slot);
+                
+                match result {
+                    Ok((block_rewards, vote_latency)) => {
+                        // Store block rewards if this is a leader slot and we need to fetch it
+                        if is_leader_slot && leader_slots_to_fetch.contains(&slot) {
+                            if let Some(rewards) = block_rewards {
+                                self.block_rewards.insert(slot, rewards);
+                            }
+                        }
+                        
+                        // Check for vote latency if this is NOT a leader slot
+                        if !is_leader_slot && vote_latency.is_some() {
+                            latest_vote_latency = vote_latency;
+                            info!("Found vote latency in non-leader slot {}: {:?}", slot, vote_latency);
+                        }
+                        
+                        batch_success_count += 1;
+                    }
+                    Err(e) => {
+                        if !e.to_string().contains("Block not available") {
+                            error!("Error fetching block data for slot {}: {}", slot, e);
+                        }
+                        // Continue with other slots, don't fail the entire batch
+                    }
+                }
+            }
+
+            let batch_duration = batch_start.elapsed();
+            info!("Fetched {} out of {} slots in {:?} (avg: {:.1}ms per slot)", 
+                  batch_success_count, batch.len(), batch_duration,
+                  batch_duration.as_millis() as f64 / batch.len() as f64);
+            
+            total_fetched += batch_success_count;
+
+            // Add a small delay between batches to be nice to the RPC
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+
+        let total_duration = total_start.elapsed();
+        if total_fetched > 0 {
+            info!("Total: fetched {} slots in {:?} (avg: {:.1}ms per slot)", 
+                  total_fetched, total_duration,
+                  total_duration.as_millis() as f64 / total_fetched as f64);
+        }
+
+        let sum: i64 = self.block_rewards.values().sum();
+        Ok((sum, latest_vote_latency))
+    }
+
+    /// Fetches a single slot and extracts both block rewards and vote latency from the same block data.
+    /// This is more efficient than fetching the same slot multiple times.
+    pub async fn get_slot_metrics(&self, slot: u64, is_leader_slot: bool) -> Result<(Option<i64>, Option<u64>), Box<dyn std::error::Error + Send + Sync>> {
+        match self.client.get_block_with_config(
+            slot,
+            RpcBlockConfig {
+                encoding: Some(UiTransactionEncoding::JsonParsed),
+                transaction_details: Some(TransactionDetails::Full),
+                rewards: Some(true), // We need rewards for block rewards calculation
+                commitment: None,
+                max_supported_transaction_version: Some(0),
+            },
+        ).await {
+            Ok(block) => {
+                let mut block_rewards = None;
+                let mut vote_latency = None;
+                
+                // Extract block rewards if this is a leader slot
+                if is_leader_slot {
+                    if let Some(rewards) = block.rewards {
+                        let validator_rewards: i64 = rewards
+                            .iter()
+                            .filter(|reward| reward.pubkey == self.identity_account)
+                            .map(|reward| reward.lamports)
+                            .sum();
+                        block_rewards = Some(validator_rewards);
+                    }
+                }
+                
+                // Extract vote latency if this is NOT a leader slot (validators don't vote on their own blocks)
+                if !is_leader_slot {
+                    if let Some(transactions) = block.transactions {
+                        for (tx_idx, tx_with_meta) in transactions.iter().enumerate() {
+                            if let EncodedTransaction::Json(tx_json) = &tx_with_meta.transaction {
+                                // Check if this transaction is signed by our validator's identity key
+                                let message = &tx_json.message;
+                                let account_keys = match message {
+                                    UiMessage::Parsed(msg) => &msg.account_keys,
+                                    _ => continue,
+                                };
+                                
+                                // Check if our identity key is in the account keys (as a signer)
+                                let is_signed_by_us = account_keys.iter().any(|key| key.pubkey == self.identity_account);
+                                if !is_signed_by_us {
+                                    continue;
+                                }
+                                
+                                // Check if our vote account is in the account keys
+                                let has_our_vote_account = account_keys.iter().any(|key| key.pubkey == self.vote_account);
+                                if !has_our_vote_account {
+                                    continue;
+                                }
+                                
+                                let instructions = match message {
+                                    UiMessage::Parsed(msg) => &msg.instructions,
+                                    _ => continue,
+                                };
+                                
+                                for (instr_idx, instr) in instructions.iter().enumerate() {
+                                    if let UiInstruction::Parsed(instruction) = instr {
+                                        // Convert the instruction to JSON string to access its fields
+                                        if let Ok(instruction_json) = serde_json::to_string(&instruction) {
+                                            if let Ok(instruction_value) = serde_json::from_str::<serde_json::Value>(&instruction_json) {
+                                                if let Some(program) = instruction_value.get("program").and_then(|v| v.as_str()) {
+                                                    if program == "vote" {
+                                                        log::info!("Found vote instruction from our validator in slot {} (non-leader slot)", slot);
+                                                        
+                                                        // Try to find lockouts in the vote instruction
+                                                        let lockouts = instruction_value
+                                                            .get("parsed")
+                                                            .and_then(|p| p.get("info"))
+                                                            .and_then(|i| i.get("towerSync"))
+                                                            .and_then(|t| t.get("lockouts"));
+                                                        
+                                                        if let Some(lockouts) = lockouts {
+                                                            if let Some(lockouts_arr) = lockouts.as_array() {
+                                                                if !lockouts_arr.is_empty() {
+                                                                    let mut highest_slot = 0u64;
+                                                                    for lockout in lockouts_arr {
+                                                                        if let Some(slot_val) = lockout.get("slot").and_then(|v| v.as_u64()) {
+                                                                            if slot_val > highest_slot {
+                                                                                highest_slot = slot_val;
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    if highest_slot > 0 {
+                                                                        let latency = slot.saturating_sub(highest_slot);
+                                                                        log::info!("Vote latency found: {} slots (tx slot: {}, voted slot: {})", latency, slot, highest_slot);
+                                                                        vote_latency = Some(latency);
+                                                                        break; // Found vote latency, no need to check more instructions
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // If we found vote latency, no need to check more transactions
+                                if vote_latency.is_some() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                Ok((block_rewards, vote_latency))
+            }
+            Err(e) => {
+                if !e.to_string().contains("Block not available") {
+                    log::debug!("Error fetching block {}: {}", slot, e);
+                }
+                Err(Box::new(e))
+            }
+        }
+    }
 }
