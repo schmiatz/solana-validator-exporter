@@ -180,6 +180,9 @@ impl Metrics {
                     let vote_latency_metric = self.vote_latency_slots.clone();
                     let network = self.network.clone();
                     let vote_account = self.vote_account.clone();
+                    let slot_metric = self.slot.clone();
+                    let network_slot = self.network.clone();
+                    let vote_account_slot = self.vote_account.clone();
                     metrics.on_vote_latency = Some(Box::new(move |latency| {
                         vote_latency_metric
                             .get_or_create(&MethodLabels {
@@ -188,6 +191,19 @@ impl Metrics {
                             })
                             .set(latency as i64);
                         log::info!("Updated vote latency metric: {} slots", latency);
+                    }));
+                    
+                    // Set up callback for slot updates
+                    let slot_metric = self.slot.clone();
+                    let network_slot = self.network.clone();
+                    let vote_account_slot = self.vote_account.clone();
+                    metrics.on_slot_update = Some(Box::new(move |slot| {
+                        slot_metric
+                            .get_or_create(&MethodLabels {
+                                network: network_slot.clone(),
+                                vote_account: vote_account_slot.clone(),
+                            })
+                            .set(slot as i64);
                     }));
                     
                     metrics
@@ -275,11 +291,6 @@ impl Metrics {
     }
 
     async fn update_all_metrics(&self, client: &solana::validator::SolanaClient) {
-        // Update slot
-        if let Ok(slot) = client.get_slot().await {
-            self.set_slot(slot);
-        }
-
         // Update epoch info
         if let Ok((epoch, epoch_progress)) = client.get_epoch().await {
             self.set_epoch(epoch);

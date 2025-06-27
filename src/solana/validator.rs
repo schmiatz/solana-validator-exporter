@@ -45,6 +45,7 @@ pub struct SlotBasedMetrics {
     pub epoch_schedule: solana_sdk::epoch_schedule::EpochSchedule,
     pub client: SolanaClient,
     pub on_vote_latency: Option<Box<dyn Fn(u64) + Send + Sync>>,
+    pub on_slot_update: Option<Box<dyn Fn(u64) + Send + Sync>>,
 }
 
 pub struct EpochBasedBlockRewards {
@@ -1182,6 +1183,7 @@ impl SlotBasedMetrics {
             epoch_schedule,
             client,
             on_vote_latency: None,
+            on_slot_update: None,
         })
     }
 
@@ -1202,6 +1204,11 @@ impl SlotBasedMetrics {
     
     pub async fn process_new_slots(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let current_slot = self.client.get_slot().await?;
+        
+        // Trigger slot update callback
+        if let Some(on_slot_update) = &self.on_slot_update {
+            on_slot_update(current_slot);
+        }
         
         // Check for epoch change
         let new_epoch = self.epoch_schedule.get_epoch(current_slot);
