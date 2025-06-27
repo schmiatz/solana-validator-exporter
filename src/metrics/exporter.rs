@@ -1,5 +1,5 @@
 use crate::solana;
-use crate::solana::validator::{StakeState, SlotBasedMetrics};
+use crate::solana::validator::{StakeState, SlotBasedMetrics, EpochBasedBlockRewards};
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::header::CONTENT_TYPE;
@@ -157,18 +157,25 @@ impl Metrics {
 
     pub fn run_loop(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            let client = solana::validator::SolanaClient::new(
+            // Create separate clients for each system
+            let vote_latency_client = solana::validator::SolanaClient::new(
                 &self.rpc_url,
                 &self.identity_account,
                 &self.vote_account,
             );
 
-            // Initialize slot-based metrics
-            let mut slot_based_metrics = match SlotBasedMetrics::new(client).await {
+            let block_rewards_client = solana::validator::SolanaClient::new(
+                &self.rpc_url,
+                &self.identity_account,
+                &self.vote_account,
+            );
+
+            // Initialize slot-based metrics for vote latency (100ms intervals)
+            let mut slot_based_metrics = match solana::validator::SlotBasedMetrics::new(vote_latency_client).await {
                 Ok(mut metrics) => {
-                    log::info!("Initialized slot-based metrics for validator {}", self.identity_account);
+                    log::info!("Initialized slot-based vote latency metrics for validator {}", self.identity_account);
                     
-                    // Set up callbacks for metrics
+                    // Set up callback for vote latency
                     let vote_latency_metric = self.vote_latency_slots.clone();
                     let network = self.network.clone();
                     let vote_account = self.vote_account.clone();
@@ -182,20 +189,6 @@ impl Metrics {
                         log::info!("Updated vote latency metric: {} slots", latency);
                     }));
                     
-                    // Set up block rewards callback
-                    let epoch_block_rewards_metric = self.epoch_block_rewards.clone();
-                    let network_rewards = self.network.clone();
-                    let vote_account_rewards = self.vote_account.clone();
-                    metrics.on_block_rewards = Some(Box::new(move |rewards| {
-                        epoch_block_rewards_metric
-                            .get_or_create(&MethodLabels {
-                                network: network_rewards.clone(),
-                                vote_account: vote_account_rewards.clone(),
-                            })
-                            .set(rewards);
-                        log::info!("Updated block rewards metric: {}", rewards);
-                    }));
-                    
                     metrics
                 }
                 Err(e) => {
@@ -204,18 +197,55 @@ impl Metrics {
                 }
             };
 
-            // Run the slot-based monitoring loop
-            loop {
-                match slot_based_metrics.process_new_slots().await {
-                    Ok(_) => {
-                        // Update all metrics after processing slots
-                        self.update_all_metrics(&slot_based_metrics.client).await;
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                    }
-                    Err(e) => {
-                        log::error!("Error in slot-based loop: {}", e);
-                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                    }
+            // Initialize epoch-based block rewards (5-second intervals)
+            let mut epoch_block_rewards = match solana::validator::EpochBasedBlockRewards::new(block_rewards_client).await {
+                Ok(mut rewards) => {
+                    log::info!("Initialized epoch-based block rewards for validator {}", self.identity_account);
+                    
+                    // Set up callback for block rewards
+                    let epoch_block_rewards_metric = self.epoch_block_rewards.clone();
+                    let network_rewards = self.network.clone();
+                    let vote_account_rewards = self.vote_account.clone();
+                    rewards.on_block_rewards_update = Some(Box::new(move |total_rewards| {
+                        epoch_block_rewards_metric
+                            .get_or_create(&MethodLabels {
+                                network: network_rewards.clone(),
+                                vote_account: vote_account_rewards.clone(),
+                            })
+                            .set(total_rewards);
+                        log::info!("Updated epoch block rewards metric: {}", total_rewards);
+                    }));
+                    
+                    rewards
+                }
+                Err(e) => {
+                    log::error!("Failed to initialize epoch-based block rewards: {}", e);
+                    return;
+                }
+            };
+
+            // Start both systems in separate tasks
+            let slot_metrics_handle = {
+                let mut slot_metrics = slot_based_metrics;
+                tokio::spawn(async move {
+                    slot_metrics.run_loop().await;
+                })
+            };
+
+            let block_rewards_handle = {
+                let mut block_rewards = epoch_block_rewards;
+                tokio::spawn(async move {
+                    block_rewards.run_loop().await;
+                })
+            };
+
+            // Wait for both tasks (they should run indefinitely)
+            tokio::select! {
+                _ = slot_metrics_handle => {
+                    log::error!("Slot-based metrics task ended unexpectedly");
+                }
+                _ = block_rewards_handle => {
+                    log::error!("Epoch-based block rewards task ended unexpectedly");
                 }
             }
         })
