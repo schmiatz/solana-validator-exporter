@@ -182,6 +182,20 @@ impl Metrics {
                         log::info!("Updated vote latency metric: {} slots", latency);
                     }));
                     
+                    // Set up block rewards callback
+                    let epoch_block_rewards_metric = self.epoch_block_rewards.clone();
+                    let network_rewards = self.network.clone();
+                    let vote_account_rewards = self.vote_account.clone();
+                    metrics.on_block_rewards = Some(Box::new(move |rewards| {
+                        epoch_block_rewards_metric
+                            .get_or_create(&MethodLabels {
+                                network: network_rewards.clone(),
+                                vote_account: vote_account_rewards.clone(),
+                            })
+                            .set(rewards);
+                        log::info!("Updated block rewards metric: {}", rewards);
+                    }));
+                    
                     metrics
                 }
                 Err(e) => {
