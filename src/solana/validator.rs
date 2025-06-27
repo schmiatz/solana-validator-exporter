@@ -1283,14 +1283,21 @@ impl EpochBasedBlockRewards {
                    client.identity_account, current_epoch, first_slot, 
                    epoch_schedule.get_last_slot_in_epoch(current_epoch));
         
-        Ok(Self {
+        let mut rewards = Self {
             client,
             current_epoch,
             last_processed_slot: first_slot - 1, // Start from before first slot to process all
             epoch_schedule,
             total_block_rewards: 0,
             on_block_rewards_update: None,
-        })
+        };
+        
+        // Initialize with 0 rewards
+        if let Some(on_update) = &rewards.on_block_rewards_update {
+            on_update(0);
+        }
+        
+        Ok(rewards)
     }
 
     pub async fn run_loop(&mut self) {
@@ -1310,8 +1317,12 @@ impl EpochBasedBlockRewards {
     }
     
     pub async fn process_epoch_block_rewards(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        log::debug!("Starting process_epoch_block_rewards for validator {}", self.client.identity_account);
+        
         let current_slot = self.client.get_slot().await?;
         let current_epoch = self.epoch_schedule.get_epoch(current_slot);
+        
+        log::debug!("Current slot: {}, current epoch: {}", current_slot, current_epoch);
         
         // Check for epoch change
         if current_epoch != self.current_epoch {
@@ -1326,6 +1337,8 @@ impl EpochBasedBlockRewards {
         let leader_schedule = self.client.client.get_leader_schedule(Some(first_slot)).await?
             .ok_or("Failed to get leader schedule")?;
         
+        log::debug!("Got leader schedule for epoch {}", current_epoch);
+        
         // Extract leader slots for our validator
         let leader_slots: Vec<u64> = leader_schedule
             .get(&self.client.identity_account)
@@ -1339,9 +1352,16 @@ impl EpochBasedBlockRewards {
         let mut new_rewards = 0i64;
         let mut processed_count = 0;
         
+        log::debug!("Starting to process {} leader slots", leader_slots.len());
+        
+        // Process only a small number of leader slots at a time to avoid taking too long
+        let max_slots_to_process = 10; // Process max 10 slots per cycle
+        let mut slots_processed = 0;
+        
         for &leader_slot in &leader_slots {
             // Only process slots we haven't processed yet and that are not in the future
             if leader_slot > self.last_processed_slot && leader_slot <= current_slot {
+                log::debug!("Processing leader slot {}", leader_slot);
                 match self.client.get_block_rewards(leader_slot).await {
                     Ok(rewards) => {
                         if rewards > 0 {
@@ -1357,19 +1377,35 @@ impl EpochBasedBlockRewards {
                         // Continue processing other slots
                     }
                 }
+                
+                slots_processed += 1;
+                
+                // Limit the number of slots processed per cycle
+                if slots_processed >= max_slots_to_process {
+                    log::debug!("Processed {} slots, stopping for this cycle", max_slots_to_process);
+                    break;
+                }
             }
         }
+        
+        log::debug!("Finished processing leader slots. New rewards: {}, processed count: {}", new_rewards, processed_count);
         
         // Update total rewards if we found new ones
         if new_rewards > 0 {
             self.total_block_rewards += new_rewards;
             log::info!("Updated total block rewards for epoch {}: {} (new: {}, processed: {} slots)", 
                       current_epoch, self.total_block_rewards, new_rewards, processed_count);
-            
-            // Call callback if set
-            if let Some(on_update) = &self.on_block_rewards_update {
-                on_update(self.total_block_rewards);
-            }
+        }
+        
+        log::debug!("About to call callback. Total rewards: {}, callback set: {}", 
+                   self.total_block_rewards, self.on_block_rewards_update.is_some());
+        
+        // Always call callback to update metric (even if no new rewards)
+        if let Some(on_update) = &self.on_block_rewards_update {
+            log::debug!("Calling block rewards callback with value: {}", self.total_block_rewards);
+            on_update(self.total_block_rewards);
+        } else {
+            log::warn!("Block rewards callback is not set!");
         }
         
         // Update last processed slot to current slot (but don't go beyond last slot of epoch)
