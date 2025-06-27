@@ -1,5 +1,5 @@
 use crate::solana;
-use crate::solana::validator::StakeState;
+use crate::solana::validator::{StakeState, SlotBasedMetrics};
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::header::CONTENT_TYPE;
@@ -163,202 +163,101 @@ impl Metrics {
                 &self.vote_account,
             );
 
-            // Create a channel for communicating current slot, epoch, and leader slots to background task
-            let (slot_tx, mut slot_rx) = tokio::sync::mpsc::unbounded_channel::<(u64, u64, Vec<u64>)>();
-            
-            // Spawn background task for block rewards fetching
-            let mut bg_client = solana::validator::SolanaClient::new(
-                &self.rpc_url,
-                &self.identity_account,
-                &self.vote_account,
-            );
-            let bg_self = self.clone();
-            tokio::spawn(async move {
-                while let Some((current_slot, current_epoch, leader_slots)) = slot_rx.recv().await {
-                    // Use the efficient method for block rewards (looking back through leader slots)
-                    match bg_client.get_efficient_slot_metrics(current_slot, current_epoch, leader_slots).await {
-                        Ok((block_rewards, _)) => {
-                            bg_self.set_epoch_block_rewards(block_rewards);
-                            
-                            // Get last block rewards separately (this is cached, so it's fast)
-                            match bg_client.get_last_block_rewards().await {
-                                Ok(last_rewards) => {
-                                    bg_self.set_last_block_rewards(last_rewards);
-                                }
-                                Err(e) => {
-                                    error!("Error fetching last block rewards: {}", e);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!("Error fetching efficient slot metrics: {}", e);
-                        }
-                    }
-                }
-            });
-
-            loop {
-                let slot = match client.get_slot().await {
-                    Ok(s) => Some(s),
-                    Err(e) => {
-                        error!("Error fetching slot: {}", e);
-                        None
-                    }
-                };
-
-                if let Some(slot) = slot {
-                    self.set_slot(slot);
+            // Initialize slot-based metrics
+            let mut slot_based_metrics = match SlotBasedMetrics::new(client).await {
+                Ok(mut metrics) => {
+                    log::info!("Initialized slot-based metrics for validator {}", self.identity_account);
                     
-                    // Check for vote latency in the current slot (real-time detection)
-                    match client.get_current_slot_vote_latency(slot).await {
-                        Ok(Some(latency)) => {
-                            self.set_vote_latency_slots(latency);
-                            log::info!("Updated vote latency metric: {} slots", latency);
-                        }
-                        Ok(None) => {
-                            // No vote transaction in current slot, keep the metric at its last value
-                            // This is fine - we don't want to reset it to 0
-                        }
-                        Err(e) => {
-                            error!("Error fetching current slot vote latency: {}", e);
-                        }
-                    }
+                    // Set up callbacks for metrics
+                    let vote_latency_metric = self.vote_latency_slots.clone();
+                    let network = self.network.clone();
+                    let vote_account = self.vote_account.clone();
+                    metrics.on_vote_latency = Some(Box::new(move |latency| {
+                        vote_latency_metric
+                            .get_or_create(&MethodLabels {
+                                network: network.clone(),
+                                vote_account: vote_account.clone(),
+                            })
+                            .set(latency as i64);
+                        log::info!("Updated vote latency metric: {} slots", latency);
+                    }));
+                    
+                    metrics
                 }
+                Err(e) => {
+                    log::error!("Failed to initialize slot-based metrics: {}", e);
+                    return;
+                }
+            };
 
-                let epoch_info = match client.get_epoch().await {
-                    Ok(e) => Some(e),
+            // Run the slot-based monitoring loop
+            loop {
+                match slot_based_metrics.process_new_slots().await {
+                    Ok(_) => {
+                        // Update all metrics after processing slots
+                        self.update_all_metrics(&slot_based_metrics.client).await;
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
                     Err(e) => {
-                        error!("Error fetching epoch: {}", e);
-                        None
-                    }
-                };
-
-                if let Some(epoch_info) = epoch_info {
-                    let (epoch, epoch_progress) = epoch_info;
-                    self.set_epoch(epoch);
-                    self.set_epoch_progress(epoch_progress);
-
-                    let jito_tips = match client.get_jito_tips(epoch).await {
-                        Ok(tips) => Some(tips),
-                        Err(e) => {
-                            error!("Error fetching jito tips: {}", e);
-                            None
-                        }
-                    };
-
-                    if let Some(jito_tips) = jito_tips {
-                        self.set_jito_tips(jito_tips);
-                    }
-
-                    // Send slot/epoch info to background task
-                    let leader_slots = match client.get_leader_info().await {
-                        Ok(slots) => slots,
-                        Err(e) => {
-                            error!("Error fetching leader slots: {}", e);
-                            Vec::new()
-                        }
-                    };
-
-                    let _ = slot_tx.send((slot.unwrap_or(0), epoch as u64, leader_slots.clone()));
-
-                    let next_slot_ms = match client
-                        .get_ms_to_next_slot(slot.unwrap_or(0), leader_slots)
-                        .await
-                    {
-                        Ok(ms) => Some(ms),
-                        Err(e) => {
-                            error!("Error fetching ms to next slot: {}", e);
-                            None
-                        }
-                    };
-
-                    if let Some(next_slot_ms) = next_slot_ms {
-                        self.set_ms_to_next_slot(next_slot_ms);
+                        log::error!("Error in slot-based loop: {}", e);
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     }
                 }
-
-                let stake_details = match client.get_stake_details().await {
-                    Ok(s) => Some(s),
-                    Err(e) => {
-                        error!("Error fetching stake details: {}", e);
-                        None
-                    }
-                };
-
-                if let Some(stake_details) = stake_details {
-                    self.set_stake(stake_details);
-                }
-
-                let identity_balance = match client.get_identity_balance().await {
-                    Ok(b) => Some(b),
-                    Err(e) => {
-                        error!("Error fetching identity balance: {}", e);
-                        None
-                    }
-                };
-
-                if let Some(identity_balance) = identity_balance {
-                    self.set_identity_balance(identity_balance);
-                }
-
-                let vote_account_balance = match client.get_vote_balance().await {
-                    Ok(b) => Some(b),
-                    Err(e) => {
-                        error!("Error fetching vote account balance: {}", e);
-                        None
-                    }
-                };
-
-                if let Some(vote_account_balance) = vote_account_balance {
-                    self.set_vote_account_balance(vote_account_balance);
-                }
-
-                let block_production = match client.get_block_production().await {
-                    Ok(b) => Some(b),
-                    Err(e) => {
-                        error!("Error fetching block production: {}", e);
-                        None
-                    }
-                };
-
-                if let Some(block_production) = block_production {
-                    let (blocks_produced, blocks_total) = block_production;
-                    let blocks_skipped = blocks_total - blocks_produced;
-                    self.set_block_production(
-                        blocks_total as u64,
-                        blocks_produced as u64,
-                        blocks_skipped as u64,
-                    );
-                }
-
-                let vote_credit_rank = match client.get_vote_credit_rank().await {
-                    Ok(r) => Some(r),
-                    Err(e) => {
-                        error!("Error fetching vote credit rank: {}", e);
-                        None
-                    }
-                };
-
-                if let Some(vote_credit_rank) = vote_credit_rank {
-                    self.set_vote_credit_rank(vote_credit_rank);
-                }
-
-                let usd_price = match client.get_sol_usd_price().await {
-                    Ok(p) => Some(p),
-                    Err(e) => {
-                        error!("Error fetching USD price: {}", e);
-                        None
-                    }
-                };
-
-                if let Some(usd_price) = usd_price {
-                    self.set_usd_price(usd_price);
-                }
-
-                // Sleep between metric updates
-                tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
             }
         })
+    }
+
+    async fn update_all_metrics(&self, client: &solana::validator::SolanaClient) {
+        // Update slot
+        if let Ok(slot) = client.get_slot().await {
+            self.set_slot(slot);
+        }
+
+        // Update epoch info
+        if let Ok((epoch, epoch_progress)) = client.get_epoch().await {
+            self.set_epoch(epoch);
+            self.set_epoch_progress(epoch_progress);
+            
+            // Update jito tips for current epoch
+            if let Ok(tips) = client.get_jito_tips(epoch).await {
+                self.set_jito_tips(tips);
+            }
+        }
+
+        // Update stake details
+        if let Ok(stake_details) = client.get_stake_details().await {
+            self.set_stake(stake_details);
+        }
+
+        // Update balances
+        if let Ok(balance) = client.get_identity_balance().await {
+            self.set_identity_balance(balance);
+        }
+
+        if let Ok(balance) = client.get_vote_balance().await {
+            self.set_vote_account_balance(balance);
+        }
+
+        // Update block production
+        if let Ok(block_production) = client.get_block_production().await {
+            let (blocks_produced, blocks_total) = block_production;
+            let blocks_skipped = blocks_total - blocks_produced;
+            self.set_block_production(
+                blocks_total as u64,
+                blocks_produced as u64,
+                blocks_skipped as u64,
+            );
+        }
+
+        // Update vote credit rank
+        if let Ok(rank) = client.get_vote_credit_rank().await {
+            self.set_vote_credit_rank(rank);
+        }
+
+        // Update USD price
+        if let Ok(price) = client.get_sol_usd_price().await {
+            self.set_usd_price(price);
+        }
     }
 
     pub fn set_slot(&self, slot: u64) {
