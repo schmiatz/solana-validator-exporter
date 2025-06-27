@@ -13,6 +13,7 @@ use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::registry::Registry;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use std::time::Duration;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct MethodLabels {
@@ -239,13 +240,35 @@ impl Metrics {
                 })
             };
 
-            // Wait for both tasks (they should run indefinitely)
+            // Start the original metrics collection loop (30-second intervals)
+            let metrics_handle = {
+                let metrics = self.clone();
+                let client = solana::validator::SolanaClient::new(
+                    &self.rpc_url,
+                    &self.identity_account,
+                    &self.vote_account,
+                );
+                tokio::spawn(async move {
+                    loop {
+                        // Update all basic metrics
+                        metrics.update_all_metrics(&client).await;
+                        
+                        // Wait 30 seconds before next update
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+                    }
+                })
+            };
+
+            // Wait for all tasks (they should run indefinitely)
             tokio::select! {
                 _ = slot_metrics_handle => {
                     log::error!("Slot-based metrics task ended unexpectedly");
                 }
                 _ = block_rewards_handle => {
                     log::error!("Epoch-based block rewards task ended unexpectedly");
+                }
+                _ = metrics_handle => {
+                    log::error!("Basic metrics collection task ended unexpectedly");
                 }
             }
         })
