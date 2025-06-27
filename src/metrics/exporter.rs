@@ -336,6 +336,32 @@ impl Metrics {
         if let Ok(price) = client.get_sol_usd_price().await {
             self.set_usd_price(price);
         }
+
+        // Update ms to next slot
+        if let Ok(leader_slots) = client.get_leader_info().await {
+            if let Ok(current_slot) = client.get_slot().await {
+                if let Ok(ms_to_next) = client.get_ms_to_next_slot(current_slot, leader_slots).await {
+                    self.set_ms_to_next_slot(ms_to_next);
+                }
+            }
+        }
+
+        // Update last block rewards
+        if let Ok(last_rewards) = client.get_last_block_rewards().await {
+            self.set_last_block_rewards(last_rewards);
+        }
+
+        // Update vote latency slots (get latest from recent slots)
+        let current_slot = match client.get_slot().await {
+            Ok(slot) => slot,
+            Err(_) => return,
+        };
+        
+        // Check last 10 slots for vote latency
+        let slots_to_check: Vec<u64> = (current_slot.saturating_sub(10)..=current_slot).collect();
+        if let Ok(Some(latency)) = client.get_latest_vote_latency_slots(&slots_to_check).await {
+            self.set_vote_latency_slots(latency);
+        }
     }
 
     pub fn set_slot(&self, slot: u64) {
